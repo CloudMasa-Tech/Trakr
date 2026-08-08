@@ -1,0 +1,66 @@
+DirectoryIndex index.html
+Options -MultiViews
+
+<IfModule mod_mime.c>
+  AddDefaultCharset utf-8
+  AddCharset utf-8 .html .css .js .mjs .json .webmanifest .txt .svg
+  AddType application/wasm .wasm
+  AddType application/octet-stream .symbols
+  AddType application/javascript .js
+  AddType application/javascript .mjs
+  AddType application/json .json
+  AddType application/manifest+json .webmanifest
+  AddType text/html .html
+  AddType text/css .css
+  AddType text/plain .txt
+  AddType image/png .png
+  AddType image/jpeg .jpg .jpeg
+  AddType image/svg+xml .svg
+  AddType image/x-icon .ico
+  AddType font/ttf .ttf
+  AddType font/otf .otf
+  AddType font/woff .woff
+  AddType font/woff2 .woff2
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+  RewriteRule ^ index.html [L]
+</IfModule>
+
+ErrorDocument 404 /index.html
+
+<IfModule mod_headers.c>
+  Header onsuccess unset X-XSS-Protection
+  Header always unset X-XSS-Protection
+  Header unset X-XSS-Protection
+  Header onsuccess unset X-Frame-Options
+  Header always unset X-Frame-Options
+  Header unset X-Frame-Options
+  Header edit* Content-Type "(?i)charset=([^;]+)" "charset=utf-8"
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set Content-Security-Policy "frame-ancestors 'self'"
+  Header always set Cache-Control "no-cache, max-age=0, must-revalidate"
+  <FilesMatch "^(flutter_service_worker|firebase-messaging-sw)\.js$">
+    Header always set Cache-Control "no-cache, max-age=0, must-revalidate"
+  </FilesMatch>
+  <FilesMatch "\.(html|js|json|wasm)$">
+    Header always set Access-Control-Allow-Origin "*"
+  </FilesMatch>
+  <FilesMatch "\.(wasm)$">
+    Header always set Content-Type "application/wasm"
+  </FilesMatch>
+  <FilesMatch "\.html$">
+    Header always set Content-Type "text/html; charset=utf-8"
+  </FilesMatch>
+  <FilesMatch "\.(js|wasm|png|jpg|jpeg|svg|ico|ttf|otf|woff|woff2)$">
+    Header always set Cache-Control "public, max-age=31536000, immutable"
+  </FilesMatch>
+  <FilesMatch "^(index\.html|flutter_bootstrap\.js|manifest\.json|hosting_check\.html)$">
+    Header always set Cache-Control "no-cache, max-age=0, must-revalidate"
+  </FilesMatch>
+</IfModule>

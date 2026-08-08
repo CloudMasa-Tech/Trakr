@@ -1,0 +1,137 @@
+Resolving dependencies...
+Downloading packages...
+  _flutterfire_internals 1.3.59 (1.3.76 available)
+  archive 3.6.1 (4.0.9 available)
+  cli_util 0.4.2 (0.5.2 available)
+  cloud_firestore 5.6.12 (6.8.0 available)
+  cloud_firestore_platform_interface 6.6.12 (8.0.6 available)
+  cloud_firestore_web 4.4.12 (5.7.2 available)
+  cross_file 0.3.5+2 (0.3.5+4 available)
+  csv 5.1.1 (8.0.0 available)
+  dbus 0.7.12 (0.7.14 available)
+  dio 5.9.2 (5.11.0 available)
+  dio_web_adapter 2.1.2 (2.2.1 available)
+  equatable 2.0.8 (2.1.0 available)
+  file_picker 8.3.7 (11.0.3 available)
+  file_saver 0.2.14 (0.4.0 available)
+  firebase_auth 5.7.0 (6.5.7 available)
+  firebase_auth_platform_interface 7.7.3 (9.0.6 available)
+  firebase_auth_web 5.15.3 (6.2.6 available)
+  firebase_core 3.15.2 (4.13.0 available)
+  firebase_core_platform_interface 6.0.3 (8.1.0 available)
+  firebase_core_web 2.24.1 (3.10.0 available)
+  firebase_messaging 15.2.10 (16.5.0 available)
+  firebase_messaging_platform_interface 4.6.10 (4.9.3 available)
+  firebase_messaging_web 3.10.10 (4.2.4 available)
+  fl_chart 0.68.0 (1.2.0 available)
+  flutter_cache_manager 3.4.1 (3.4.2 available)
+  flutter_lints 4.0.0 (6.0.0 available)
+  flutter_local_notifications 17.2.4 (22.2.0 available)
+  flutter_local_notifications_linux 4.0.1 (8.0.1 available)
+  flutter_local_notifications_platform_interface 7.2.0 (12.1.0 available)
+  flutter_map 7.0.2 (8.3.1 available)
+  flutter_map_cancellable_tile_provider 3.0.2 (discontinued replaced by flutter_map)
+  flutter_plugin_android_lifecycle 2.0.34 (2.0.35 available)
+  geolocator 14.0.2 (14.0.3 available)
+  geolocator_android 5.0.2 (5.0.3 available)
+  geolocator_apple 2.3.13 (2.3.14 available)
+  geolocator_linux 0.2.4 (0.2.6 available)
+  geolocator_platform_interface 4.2.6 (4.2.8 available)
+  geolocator_web 4.1.3 (4.1.4 available)
+  go_router 17.2.3 (17.4.0 available)
+  google_fonts 6.3.3 (8.2.1 available)
+  google_sign_in 6.3.0 (7.2.0 available)
+  google_sign_in_android 6.2.1 (7.2.16 available)
+  google_sign_in_ios 5.9.0 (6.3.0 available)
+  google_sign_in_platform_interface 2.5.0 (3.1.0 available)
+  google_sign_in_web 0.12.4+4 (1.1.3 available)
+  image 4.3.0 (4.9.1 available)
+  image_picker 1.2.1 (1.2.3 available)
+  image_picker_android 0.8.13+16 (0.8.13+19 available)
+  image_picker_ios 0.8.13+3 (0.8.13+6 available)
+  intl 0.19.0 (0.20.3 available)
+  jni 1.0.0 (1.0.3 available)
+  jni_flutter 1.0.1 (1.0.2 available)
+  latlong2 0.9.1 (0.10.1 available)
+  lints 4.0.0 (6.1.0 available)
+  matcher 0.12.19 (0.12.20 available)
+  meta 1.18.0 (1.19.0 available)
+  mgrs_dart 2.0.0 (3.0.0 available)
+  mobile_scanner 5.2.3 (7.4.0 available)
+  package_config 2.2.0 (3.0.0 available)
+  package_info_plus 9.0.1 (10.2.1 available)
+  package_info_plus_platform_interface 3.2.1 (4.1.0 available)
+  path_provider 2.1.5 (2.1.6 available)
+  path_provider_foundation 2.5.1 (2.6.0 available)
+  path_provider_linux 2.2.1 (2.2.2 available)
+  path_provider_platform_interface 2.1.2 (2.1.3 available)
+  pdf 3.12.0 (3.13.0 available)
+  permission_handler 11.4.0 (13.0.0 available)
+  permission_handler_android 12.1.0 (14.0.0 available)
+  permission_handler_apple 9.4.7 (9.5.0 available)
+  permission_handler_html 0.1.3+5 (0.1.4+1 available)
+  permission_handler_platform_interface 4.3.0 (4.4.0 available)
+  permission_handler_windows 0.2.1 (0.2.2 available)
+  printing 5.14.3 (5.15.0 available)
+  proj4dart 2.1.0 (3.0.0 available)
+  qr 3.0.2 (4.0.0 available)
+  shared_preferences_android 2.4.23 (2.4.27 available)
+  sqflite 2.4.2 (2.4.3 available)
+  sqflite_android 2.4.2+2 (2.4.3 available)
+  sqflite_common 2.5.6 (2.5.11 available)
+  sqflite_darwin 2.4.2 (2.4.3+1 available)
+  sqflite_platform_interface 2.4.0 (2.4.1 available)
+  synchronized 3.4.0 (3.4.1+1 available)
+  test_api 0.7.11 (0.7.13 available)
+  timezone 0.9.4 (0.11.1 available)
+  unicode 0.3.1 (1.1.9 available)
+  url_launcher_android 6.3.29 (6.3.32 available)
+  url_launcher_ios 6.3.6 (6.4.1 available)
+  url_launcher_web 2.4.1 (2.4.3 available)
+  uuid 4.5.3 (4.6.0 available)
+  vector_math 2.2.0 (2.4.2 available)
+  vm_service 15.0.2 (15.2.0 available)
+  win32 5.15.0 (6.4.0 available)
+  xml 6.6.1 (7.0.1 available)
+Got dependencies!
+1 package is discontinued.
+93 packages have newer versions incompatible with dependency constraints.
+Try `flutter pub outdated` for more information.
+Analyzing attendance-using-QR...                                
+
+   info • The constant name 'CHECK_IN' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_log.dart:4:3 • constant_identifier_names
+   info • The constant name 'TEMP_EXIT' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_log.dart:5:3 • constant_identifier_names
+   info • The constant name 'RE_ENTRY' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_log.dart:6:3 • constant_identifier_names
+   info • The constant name 'FINAL_CHECKOUT' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_log.dart:7:3 • constant_identifier_names
+   info • The constant name 'UNAUTHORIZED_EXIT' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_log.dart:8:3 • constant_identifier_names
+   info • The constant name 'NONE' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_model.dart:9:3 • constant_identifier_names
+   info • The constant name 'CHECK_IN' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_model.dart:10:3 • constant_identifier_names
+   info • The constant name 'TEMP_EXIT' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_model.dart:11:3 • constant_identifier_names
+   info • The constant name 'RE_ENTRY' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_model.dart:12:3 • constant_identifier_names
+   info • The constant name 'FINAL_CHECKOUT' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_model.dart:13:3 • constant_identifier_names
+   info • The constant name 'UNAUTHORIZED_EXIT' isn't a lowerCamelCase identifier. Try changing the name to follow the lowerCamelCase style • lib/models/attendance_model.dart:14:3 • constant_identifier_names
+warning • The declaration '_initial' isn't referenced. Try removing the declaration of '_initial' • lib/screens/employee/employee_home_screen.dart:4199:10 • unused_element
+warning • The declaration '_OverviewTopInfo' isn't referenced. Try removing the declaration of '_OverviewTopInfo' • lib/screens/employee/employee_home_screen.dart:4205:7 • unused_element
+warning • The declaration '_OverviewProfileChip' isn't referenced. Try removing the declaration of '_OverviewProfileChip' • lib/screens/employee/employee_home_screen.dart:4282:7 • unused_element
+warning • The declaration '_MonthlyAttendanceSummary' isn't referenced. Try removing the declaration of '_MonthlyAttendanceSummary' • lib/screens/employee/employee_home_screen.dart:4456:7 • unused_element
+warning • The declaration '_ScanningRulesPanel' isn't referenced. Try removing the declaration of '_ScanningRulesPanel' • lib/screens/employee/employee_home_screen.dart:5116:7 • unused_element
+warning • The value of the field 'page' isn't used. Try removing the field, or using it • lib/screens/manager/manager_dashboard_screen.dart:86:22 • unused_field
+warning • The value of the field 'present' isn't used. Try removing the field, or using it • lib/screens/manager/manager_dashboard_screen.dart:94:22 • unused_field
+warning • The value of the field 'late' isn't used. Try removing the field, or using it • lib/screens/manager/manager_dashboard_screen.dart:96:22 • unused_field
+warning • The value of the field 'absent' isn't used. Try removing the field, or using it • lib/screens/manager/manager_dashboard_screen.dart:98:22 • unused_field
+warning • The value of the field 'governmentHoliday' isn't used. Try removing the field, or using it • lib/screens/manager/manager_dashboard_screen.dart:104:22 • unused_field
+warning • The value of the field 'hinduHoliday' isn't used. Try removing the field, or using it • lib/screens/manager/manager_dashboard_screen.dart:105:22 • unused_field
+warning • The value of the field 'muslimHoliday' isn't used. Try removing the field, or using it • lib/screens/manager/manager_dashboard_screen.dart:106:22 • unused_field
+warning • The value of the field 'christianHoliday' isn't used. Try removing the field, or using it • lib/screens/manager/manager_dashboard_screen.dart:107:22 • unused_field
+warning • The declaration '_buildOwnPermissionPage' isn't referenced. Try removing the declaration of '_buildOwnPermissionPage' • lib/screens/manager/manager_dashboard_screen.dart:2553:10 • unused_element
+warning • The declaration '_buildExportButton' isn't referenced. Try removing the declaration of '_buildExportButton' • lib/screens/manager/manager_dashboard_screen.dart:5799:10 • unused_element
+warning • The declaration '_initials' isn't referenced. Try removing the declaration of '_initials' • lib/screens/manager/manager_dashboard_screen.dart:6370:10 • unused_element
+warning • The declaration '_avatarColor' isn't referenced. Try removing the declaration of '_avatarColor' • lib/screens/manager/manager_dashboard_screen.dart:6379:9 • unused_element
+warning • The declaration '_initials' isn't referenced. Try removing the declaration of '_initials' • lib/screens/manager/manager_dashboard_screen.dart:6614:10 • unused_element
+warning • The declaration '_avatarColor' isn't referenced. Try removing the declaration of '_avatarColor' • lib/screens/manager/manager_dashboard_screen.dart:6623:9 • unused_element
+warning • Unused import: 'dart:typed_data'. Try removing the import directive • lib/utils/logo_file_picker_web.dart:11:8 • unused_import
+  error • The getter 'onLoad' isn't defined for the type 'FileReader'. Try importing the library that defines 'onLoad', correcting the name to the name of an existing getter, or defining a getter or field named 'onLoad' • lib/utils/logo_file_picker_web.dart:32:12 • undefined_getter
+  error • The getter 'onError' isn't defined for the type 'FileReader'. Try importing the library that defines 'onError', correcting the name to the name of an existing getter, or defining a getter or field named 'onError' • lib/utils/logo_file_picker_web.dart:45:12 • undefined_getter
+warning • The receiver can't be 'null' because of short-circuiting, so the null-aware operator '?.' can't be used. Try replacing the operator '?.' with '.' • lib/utils/logo_file_picker_web.dart:87:47 • invalid_null_aware_operator
+  error • The getter 'onLoad' isn't defined for the type 'FileReader'. Try importing the library that defines 'onLoad', correcting the name to the name of an existing getter, or defining a getter or field named 'onLoad' • lib/utils/logo_file_picker_web.dart:90:12 • undefined_getter
+

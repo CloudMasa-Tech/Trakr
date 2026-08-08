@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "6848613159",
+    "project_id": "trakradminsetup-28437",
+    "storage_bucket": "trakradminsetup-28437.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:6848613159:android:d86d0ba6fd6a190e137702",
+        "android_client_info": {
+          "package_name": "com.yourcompany.qrattendance"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBjythFVr0CYzT_DFa08Mx9DPmNIwYtKAY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

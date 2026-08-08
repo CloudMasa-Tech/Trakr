@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!-- WebSpaceKit/cPanel public_html root hosting. Use "/subfolder/" only if uploaded into a subdirectory. -->
+  <base href="/">
+
+  <meta charset="utf-8">
+  <meta name="description" content="TЯAKR attendance system web application.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="TЯAKR.">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>TЯAKR.</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <!--
+    You can customize the "flutter_bootstrap.js" script.
+    This is useful to provide a custom configuration to the Flutter loader
+    or to give the user feedback during the initialization process.
+
+    For more details:
+    * https://docs.flutter.dev/platform-integration/web/initialization
+  -->
+  <script>
+    function normalizeFlutterViewport() {
+      var viewport = document.querySelector('meta[flt-viewport]');
+      var content = 'width=device-width, initial-scale=1.0';
+      if (viewport && viewport.getAttribute('content') !== content) {
+        viewport.setAttribute('content', content);
+      }
+    }
+
+    function normalizeGeneratedCssText(cssText) {
+      return cssText
+        .replace(
+          /(-webkit-text-size-adjust\s*:\s*100%\s*;)(?!\s*text-size-adjust)/gi,
+          '$1 text-size-adjust: 100%;'
+        )
+        .replace(
+          /(appearance\s*:\s*none\s*;)\s*(-webkit-appearance\s*:\s*none\s*;)/gi,
+          '$2 $1'
+        );
+    }
+
+    function normalizeGeneratedStyles(root) {
+      var styles = (root || document).querySelectorAll('style');
+      styles.forEach(function (style) {
+        var normalized = normalizeGeneratedCssText(style.textContent || '');
+        if (normalized !== style.textContent) {
+          style.textContent = normalized;
+        }
+      });
+    }
+
+    var originalInsertRule = CSSStyleSheet.prototype.insertRule;
+    CSSStyleSheet.prototype.insertRule = function (rule, index) {
+      return originalInsertRule.call(
+        this,
+        normalizeGeneratedCssText(String(rule)),
+        index
+      );
+    };
+
+    new MutationObserver(function (mutations) {
+      normalizeFlutterViewport();
+      mutations.forEach(function (mutation) {
+        mutation.addedNodes.forEach(function (node) {
+          if (node.nodeType === Node.ELEMENT_NODE) {
+            if (node.tagName === 'STYLE') {
+              var normalized = normalizeGeneratedCssText(node.textContent || '');
+              if (normalized !== node.textContent) {
+                node.textContent = normalized;
+              }
+            } else {
+              normalizeGeneratedStyles(node);
+            }
+          }
+        });
+      });
+    }).observe(document.head, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['content'],
+    });
+    normalizeFlutterViewport();
+    normalizeGeneratedStyles(document);
+
+    window.addEventListener('error', function (event) {
+      var message = String(event.message || '');
+      var stack = String((event.error && event.error.stack) || '');
+      if (
+        message.indexOf("Cannot read properties of null (reading 'removeChild')") !== -1 &&
+        stack.indexOf('/dwds/src/injected/client.js') !== -1
+      ) {
+        event.preventDefault();
+      }
+      if (
+        message.indexOf("LateInitializationError: Field '_handledContextLostEvent' has not been initialized") !== -1 &&
+        stack.indexOf('canvas_provider.dart') !== -1
+      ) {
+        event.preventDefault();
+      }
+    });
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Hosting Check</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 24px;
+      font-family: Arial, sans-serif;
+      color: #111827;
+      background: #f9fafb;
+    }
+
+    main {
+      max-width: 760px;
+      margin: 0 auto;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px;
+    }
+
+    h1 {
+      margin: 0 0 16px;
+      font-size: 22px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      padding: 12px 0;
+      border-top: 1px solid #e5e7eb;
+      align-items: center;
+    }
+
+    .ok {
+      color: #047857;
+      font-weight: 700;
+    }
+
+    .bad {
+      color: #b91c1c;
+      font-weight: 700;
+    }
+
+    code {
+      background: #f3f4f6;
+      padding: 2px 5px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Flutter Hosting Check</h1>
+    <p>This page checks whether the static files required by Flutter Web are reachable with useful content types.</p>
+    <div id="results"></div>
+  </main>
+
+  <script>
+    const checks = [
+      { url: "index.html", type: "text/html" },
+      { url: "main.dart.js", type: "javascript" },
+      { url: "flutter_bootstrap.js", type: "javascript" },
+      { url: "canvaskit/canvaskit.js", type: "javascript" },
+      { url: "canvaskit/canvaskit.wasm", type: "application/wasm" },
+      { url: "assets/AssetManifest.bin.json", type: "json" },
+      { url: "manifest.json", type: "json" }
+    ];
+
+    const results = document.getElementById("results");
+
+    function addRow(label, status, detail) {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `<div><code>${label}</code><br>${detail || ""}</div><div class="${status ? "ok" : "bad"}">${status ? "OK" : "FAIL"}</div>`;
+      results.appendChild(row);
+    }
+
+    async function run() {
+      for (const check of checks) {
+        try {
+          const response = await fetch(check.url, { cache: "no-store" });
+          const contentType = response.headers.get("content-type") || "";
+          const ok = response.ok && contentType.toLowerCase().includes(check.type);
+          addRow(check.url, ok, `${response.status} ${response.statusText} - ${contentType || "missing content-type"}`);
+        } catch (error) {
+          addRow(check.url, false, String(error));
+        }
+      }
+    }
+
+    run();
+  </script>
+</body>
+</html>

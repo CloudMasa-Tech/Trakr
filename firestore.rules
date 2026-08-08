@@ -1,0 +1,227 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isSuperAdmin() {
+      // Super admin is a platform role bound to a single locked account.
+      // Both the Firebase auth token email AND the users doc role must match,
+      // so a Firestore doc write can never elevate another account.
+      return signedIn() &&
+        request.auth.token.email != null &&
+        request.auth.token.email.lower() == 'keerthana.s@cloudmasa.com' &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'super_admin';
+    }
+
+    function userCompanyId() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId;
+    }
+
+    // True when the caller belongs to the given company (or is super admin).
+    function inCompany(companyId) {
+      return isSuperAdmin() || (signedIn() && companyId != null && companyId == userCompanyId());
+    }
+
+    // True when the existing document belongs to the caller's company.
+    function sameCompany() {
+      return inCompany(resource.data.companyId);
+    }
+
+    // True when the incoming document belongs to the caller's company (used for create).
+    function sameCompanyOnCreate() {
+      return inCompany(request.resource.data.companyId);
+    }
+
+    // ── Multi-tenant directory ────────────────────────────────────────
+    match /staff/{document=**} {
+      allow read: if isSuperAdmin() || sameCompany();
+      allow create: if isSuperAdmin() || sameCompanyOnCreate();
+      allow update: if isSuperAdmin() || sameCompany();
+      allow delete: if isSuperAdmin() || sameCompany();
+    }
+    match /managers/{document=**} {
+      allow read: if isSuperAdmin() || sameCompany();
+      allow create: if isSuperAdmin() || sameCompanyOnCreate();
+      allow update: if isSuperAdmin() || sameCompany();
+      allow delete: if isSuperAdmin() || sameCompany();
+    }
+    match /admins/{document=**} {
+      allow read: if isSuperAdmin() || sameCompany();
+      allow create: if isSuperAdmin() || sameCompanyOnCreate();
+      allow update: if isSuperAdmin() || sameCompany();
+      allow delete: if isSuperAdmin() || sameCompany();
+    }
+
+    // users/{uid}: own doc always readable/writable; otherwise company-scoped.
+    match /users/{userId} {
+      allow read: if isSuperAdmin() || request.auth.uid == userId || sameCompany();
+      allow create: if isSuperAdmin() || request.auth.uid == userId || sameCompanyOnCreate();
+      allow update: if isSuperAdmin() || request.auth.uid == userId || sameCompany();
+      allow delete: if isSuperAdmin() || sameCompany();
+    }
+
+    // Legacy collection (not written by the client) — left open to signed-in
+    // users to avoid breaking any existing access.
+    match /employees/{document=**} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Companies ─────────────────────────────────────────────────────
+    // Company id is the document id, so scope against the caller's companyId.
+    match /companies/{companyId} {
+      allow read, write: if inCompany(companyId);
+    }
+    match /permissions/{document=**} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Config (global/tenant-level, no per-company field) ─────────────
+    match /settings/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /app_config/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /geo_config/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /offices/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /qr_tokens/{document=**} {
+      allow read, write: if signedIn();
+    }
+
+    // Tenant-default catalogs seeded during workspace provisioning. Readable/
+    // writable by any signed-in tenant member (no per-company field yet).
+    match /departments/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /designations/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /leave_policies/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /holidays/{document=**} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Attendance ────────────────────────────────────────────────────
+    match /attendance/{document=**} {
+      allow read: if isSuperAdmin() || sameCompany();
+      allow create: if isSuperAdmin() || sameCompanyOnCreate();
+      allow update: if isSuperAdmin() || sameCompany();
+      allow delete: if isSuperAdmin() || sameCompany();
+    }
+    // NOTE: attendance_alerts / attendance_logs are NOT yet scoped — they
+    // don't carry a companyId field yet. See production-readiness notes.
+    match /attendance_alerts/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /attendance_logs/{document=**} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Requests ──────────────────────────────────────────────────────
+    match /checkout_requests/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /leave_requests/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /permission_requests/{document=**} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Notifications ─────────────────────────────────────────────────
+    match /notifications/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /notification_actions/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /event_dedupe/{document=**} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Metadata ──────────────────────────────────────────────────────
+    match /staff_metadata/{document=**} {
+      allow read, write: if signedIn();
+    }
+
+    // ── Control plane (Super Admin console only) ──────────────────────
+    // Workspace registry + allocation pool for the multi-tenant provisioning
+    // flow. Workspaces are readable by anyone for pre-login workspace-code
+    // entry (the code alone is the join credential); only the platform admin
+    // can write them.
+    match /workspaces/{document=**} {
+      allow read: if true;
+      allow write: if isSuperAdmin();
+    }
+    match /firebase_project_allocations/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+    // Login identity index: email → workspace. Readable pre-login so the app
+    // can resolve which tenant project an email belongs to (same tradeoff as
+    // `workspaces`). Writes are shape-validated and may only point at a
+    // registered workspace; the entry is only a redirection hint and can never
+    // grant access (credentials are always checked against the tenant project).
+    match /tenant_users/{email} {
+      allow read: if true;
+      allow create, update: if request.resource.data.email is string
+          && request.resource.data.email == email
+          && (request.resource.data.role == 'company_admin' ||
+              request.resource.data.role == 'user')
+          && exists(/databases/$(database)/documents/workspaces/$(request.resource.data.workspaceId));
+      allow delete: if isSuperAdmin();
+    }
+    match /plans/{document=**} {
+      allow read: if signedIn();
+      allow write: if isSuperAdmin();
+    }
+    match /subscriptions/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+    // Live audit log of workspace provisioning runs, streamed by the Client
+    // Onboarding progress modal while `provisionWorkspace` executes. Written
+    // by Cloud Functions (Admin SDK bypasses rules); readable by the Super
+    // Admin console only.
+    match /workspace_provision_logs/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    // ── Platform (Super Admin console only) ───────────────────────────
+    // Aggregated counters + operational collections for the platform portal.
+    match /platformStats/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /activity_logs/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /audit_logs/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /security_events/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /announcements/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+    match /support_tickets/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+    // billing/invoices, billing/payments and any nested subcollections.
+    match /billing/{document=**} {
+      allow read, write: if isSuperAdmin();
+    }
+
+    // ── Catch-all deny ────────────────────────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
