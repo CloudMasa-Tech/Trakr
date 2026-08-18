@@ -105,10 +105,7 @@ class WorkspaceAllocationRepository {
   }
 
   /// Permanently removes [projectId] from the pool.
-  Future<void> decommission(String projectId) async {
-    await _firestore.collection(_collectionName).doc(projectId).update({
-      'status': AllocationStatus.decommissioned.value,
-      'updatedAt': FieldValue.serverTimestamp(),
-    });
+  Future<void> delete(String projectId) async {
+    await _firestore.collection(_collectionName).doc(projectId).delete();
   }
 }

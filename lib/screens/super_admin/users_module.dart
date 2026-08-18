@@ -368,8 +368,10 @@ class _UsersModuleState extends State<UsersModule> {
           options: const [
             'All',
             'super_admin',
-            'company_admin',
+            'admin',
             'manager',
+            'employee',
+            'company_admin',
             'staff',
           ],
           value: _roleFilter,
@@ -687,8 +689,10 @@ class _UsersModuleState extends State<UsersModule> {
   Widget _roleChip(String role) {
     final (color, label) = switch (role) {
       'super_admin' => (kCoRed, 'Super Admin'),
-      'company_admin' => (kCoAmber, 'Company Admin'),
+      'admin' => (kCoAmber, 'Admin'),
+      'company_admin' => (kCoAmber, 'Admin'),
       'manager' => (kCoBlue, 'Manager'),
+      'employee' => (kCoGreen, 'Employee'),
       'staff' => (kCoGreen, 'Staff'),
       _ => (kCoGrey, role.isEmpty ? 'Unknown' : role),
     };

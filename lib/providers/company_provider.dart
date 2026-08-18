@@ -78,6 +78,11 @@ class CompanyProvider extends ChangeNotifier {
           _company = company;
           _isLoading = false;
           notifyListeners();
+        }, onError: (Object error, StackTrace s) {
+          debugPrint('[CompanyProvider] company stream error: $error');
+          _company = null;
+          _isLoading = false;
+          notifyListeners();
         });
       } else {
         debugPrint('[CompanyProvider.resolveCompany] no companyId found');

@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Build iOS app**: `flutter build ios --release`
 - **Build web**: `flutter build web`
 - **Regenerate launcher icons**: `flutter pub run flutter_launcher_icons` (config at the bottom of `pubspec.yaml`, source image `assets/trakr00-removebg-preview.png`)
-- **Vercel backend** (in `vercel_backend/`, Node.js serverless functions): deploy the whole directory with `vercel deploy --prod` from `vercel_backend/`. It runs on the **Spark plan** — all server-side push, email, and scheduled jobs live here. Requires the `FIREBASE_SERVICE_ACCOUNT` env var (a JSON service-account key) plus `SMTP_EMAIL`/`SMTP_PASSWORD` for `sendCredentialEmail`.
+- **Vercel backend** (in `vercel_backend/`, Node.js serverless functions): deploy the whole directory with `vercel deploy --prod` from `vercel_backend/`. It runs on the **Spark plan** — all server-side push, email, and scheduled jobs live here. `FIREBASE_SERVICE_ACCOUNT` is **only** used by email/notification cron functions (`sendCredentialEmail`, `qrNotifications`, `syncMissedCheckout`, `attendanceReminders`). **Workspace provisioning does NOT use** `FIREBASE_SERVICE_ACCOUNT` — it is client-side only using the Firebase Client SDK. No `serviceAccountKey.json` or private keys are ever stored in Flutter or sent to the client.
 - **Firestore rules/indexes**: `firebase deploy --only firestore:rules,firestore:indexes`
 
 ## Architecture
@@ -88,7 +88,17 @@ Note: `lib/services/qr_service.dart` exists but is **empty (0 lines)** — all Q
 `staff`, `managers`, `admins`, `users`, `staff_metadata`, `attendance`, `attendance_alerts`, `attendance_logs`, `checkout_requests`, `leave_requests`, `permission_requests`, `notifications`, `notification_actions`, `event_dedupe`, `qr_tokens`, `geo_config`, `offices`, `app_config`, `settings`, plus per-tenant white-label config. (`employees` and `tenants` also appear in `firestore.rules`/old Cloud Functions but aren't written by the client — likely legacy or future multi-tenant scaffolding.)
 
 ### Firestore rules
-`firestore.rules` requires `request.auth != null` (`signedIn()`) for read/write on every listed collection — there is **no role-based (admin/manager/staff) or ownership-based restriction**, so any authenticated user can read/write any document in any collection. Everything else is denied by the trailing catch-all. Treat this as a known gap: row-level authorization (e.g. staff can only write their own attendance doc) is the natural next hardening step before production multi-tenant use.
+`firestore.rules` requires `request.auth != null` (`signedIn()`) for read/write on every listed collection. The rules enforce tenant isolation and prevent privilege escalation:
+
+- `isSuperAdmin()` — only the platform Super Admin (resolved via `users/{uid}.role == 'super_admin'`) has platform-wide authority.
+- `inCompany(companyId)` — a signed-in user belongs to a company if they hold the `company_admin` `roleId` or are the Super Admin.
+- `sameCompanyOnCreate()` / `sameCompany()` — writes/reads are scoped to the company owning the caller's `users.{uid}.companyId`.
+- Privilege fields (`role/roleId/roleName/roleLevel/permissionIds`) may only be assigned by the Super Admin, a Company Admin, or the tenant's **seeded bootstrap admin** (verified via `app_config/admin_access` primaryAdminEmail match). Self-registered accounts must create their docs without any privilege fields (`noPrivilegeFields` guard), and may never change them on update (`unchangedPrivileges` guard).
+- `app_config/admin_access` — the bootstrap trust anchor; only the platform Super Admin or the recorded primary admin may create/update it. The very first create is only allowed when no doc exists yet.
+
+The catch-all `/{document=**}` denies all read/write. Row-level authorization is the natural next step before production multi-tenant use.
+
+**Important**: On Spark plan, Firestore rules for each tenant project must be **manually deployed** via `firebase deploy --only firestore:rules` after the project is created and Email/Password auth is enabled. The client SDK cannot auto-deploy rules on Spark.
 
 ## Key Dependencies
 

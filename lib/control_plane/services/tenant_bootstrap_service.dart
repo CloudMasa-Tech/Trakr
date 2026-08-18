@@ -122,6 +122,7 @@ class TenantBootstrapService {
       'companyName': workspace.companyName,
       'firebaseProjectId': workspace.firebaseProjectId,
       'firebaseConfig': workspace.firebaseConfig.toMap(),
+      'firebaseConfigured': workspace.firebaseConfigured,
       'status': workspace.status.value,
       'onboardingStatus': workspace.onboardingStatus.value,
       'subscription': {

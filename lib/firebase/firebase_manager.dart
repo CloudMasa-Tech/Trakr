@@ -1,7 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 
 import '../firebase_options.dart';
@@ -38,6 +37,11 @@ class FirebaseManager {
 
   final Map<String, FirebaseApp> _apps = <String, FirebaseApp>{};
 
+  /// Workspaces currently undergoing provisioning. The tenant app for these
+  /// workspaces must never be disposed until the provisioning operation
+  /// completes (success or failure).
+  final Set<String> _activeProvisioningWorkspaces = {};
+
   String? _activeWorkspaceId;
   FirebaseContext? _activeContext;
 
@@ -70,6 +74,28 @@ class FirebaseManager {
 
   /// The [FirebaseContext] bound to the currently active project.
   FirebaseContext get activeContext => _activeContext ??= FirebaseContext();
+
+  /// Whether [workspaceId] currently has an in-provisioning operation.
+  bool _isProvisioning(String workspaceId) =>
+      _activeProvisioningWorkspaces.contains(workspaceId);
+
+  /// Whether [workspaceId] currently has an in-provisioning operation.
+  bool isProvisioning(String workspaceId) => _isProvisioning(workspaceId);
+
+  /// Adds [workspaceId] to the set of workspaces with active provisioning.
+  /// Call this before starting any provisioning operation that uses the tenant
+  /// Firebase app, so that [disposeTenant] knows not to dispose the app until
+  /// the operation completes.
+  void markProvisioning(String workspaceId) {
+    _activeProvisioningWorkspaces.add(workspaceId);
+  }
+
+  /// Removes [workspaceId] from the set of workspaces with active provisioning.
+  /// Call this after all provisioning operations using the tenant app have
+  /// completed (success or failure).
+  void clearProvisioning(String workspaceId) {
+    _activeProvisioningWorkspaces.remove(workspaceId);
+  }
 
   /// Whether a [FirebaseApp] is already initialized for [workspaceId], either
   /// through this manager or through the Firebase core registry.
@@ -104,24 +130,100 @@ class FirebaseManager {
   /// Idempotent: returns the already-initialized app when one exists for the
   /// workspace, so duplicate initialization is prevented. When [options] is
   /// omitted, [tenantOptionsResolver] is used.
+  ///
+  /// When [options] IS provided, the existing app (if any) is verified against
+  /// the requested project identity (`apiKey`/`projectId`/`appId`). A cached or
+  /// registry app bound to a *different* project is a stale app (e.g. left over
+  /// from an earlier run of the same session that used an older config, or a
+  /// config referencing the master project) and is disposed and re-initialized
+  /// from [options] so every downstream Auth/Firestore call uses the current
+  /// config instead of a stale API key.
   Future<FirebaseApp> initializeTenantApp({
     required String workspaceId,
     FirebaseOptions? options,
   }) async {
-    final cached = _apps[workspaceId];
-    if (cached != null) return cached;
+    if (options == null) {
+      // No config was requested — reuse any app already bound to the workspace.
+      final cached = _apps[workspaceId];
+      if (cached != null) return cached;
+      final existing = Firebase.apps.where((app) => app.name == workspaceId);
+      if (existing.isNotEmpty) {
+        final app = existing.first;
+        _apps[workspaceId] = app;
+        return app;
+      }
+      return _initialize(
+        workspaceId: workspaceId,
+        options: await _resolveOptions(workspaceId),
+      );
+    }
 
+    // A config was explicitly requested. Never silently reuse an app that was
+    // initialized from a different config earlier in the session — that would
+    // bind the workspace's Auth/Firestore calls to the wrong project (e.g. the
+    // master project's API key) and surface as `api-key-not-valid`.
+    final cached = _apps[workspaceId];
+    if (cached != null) {
+      if (_sameProject(cached.options, options)) return cached;
+      return _replaceStaleApp(workspaceId: workspaceId, options: options);
+    }
     final existing = Firebase.apps.where((app) => app.name == workspaceId);
     if (existing.isNotEmpty) {
       final app = existing.first;
-      _apps[workspaceId] = app;
-      return app;
+      if (_sameProject(app.options, options)) {
+        _apps[workspaceId] = app;
+        return app;
+      }
+      return _replaceStaleApp(workspaceId: workspaceId, options: options);
     }
 
-    final resolvedOptions = options ?? await _resolveOptions(workspaceId);
+    return _initialize(workspaceId: workspaceId, options: options);
+  }
+
+  /// Whether [a] and [b] describe the same Firebase project + app. These three
+  /// fields are the project identity; every other option (authDomain, storage
+  /// bucket, measurement id, …) follows from them.
+  static bool _sameProject(FirebaseOptions a, FirebaseOptions b) {
+    return a.apiKey == b.apiKey &&
+        a.projectId == b.projectId &&
+        a.appId == b.appId;
+  }
+
+  /// Disposes a stale [FirebaseApp] bound to [workspaceId] and re-initializes
+  /// it from [options], so the workspace's app is always bound to the config
+  /// the caller requested.
+  ///
+  /// Throws when the workspace is mid-provisioning (the app must not be
+  /// disposed while a provisioning operation is in flight) or when the app is
+  /// the default project — callers must resolve those states first.
+  Future<FirebaseApp> _replaceStaleApp({
+    required String workspaceId,
+    required FirebaseOptions options,
+  }) async {
+    debugPrint(
+      'FirebaseManager: replacing the stale Firebase app for workspace '
+      '"$workspaceId" — it is bound to a different project than the requested '
+      'config. Re-initializing from the current config.',
+    );
+    final cached = _apps[workspaceId];
+    if (cached != null) {
+      await disposeTenant(workspaceId);
+    } else {
+      final existing = Firebase.apps.where((app) => app.name == workspaceId);
+      if (existing.isNotEmpty) {
+        await existing.first.delete();
+      }
+    }
+    return _initialize(workspaceId: workspaceId, options: options);
+  }
+
+  Future<FirebaseApp> _initialize({
+    required String workspaceId,
+    required FirebaseOptions options,
+  }) async {
     final app = await Firebase.initializeApp(
       name: workspaceId,
-      options: resolvedOptions,
+      options: options,
     );
     _apps[workspaceId] = app;
 
@@ -201,27 +303,16 @@ class FirebaseManager {
   /// Switches the active project back to the default Firebase project.
   FirebaseContext activateDefault() {
     _activeWorkspaceId = null;
-    final context = FirebaseContext();
-    _activeContext = context;
-    FirebaseContextProvider.setActive(context);
-    _contextApplier?.call(context);
-    return context;
+    try {
+      final context = FirebaseContext();
+      _activeContext = context;
+      FirebaseContextProvider.setActive(context);
+      _contextApplier?.call(context);
+      return context;
+    } finally {
+      clearProvisioning(_activeWorkspaceId ?? '');
+    }
   }
-
-  /// The [FirebaseFirestore] bound to the active (or [workspaceId]) project.
-  FirebaseFirestore getFirestore([String? workspaceId]) =>
-      FirebaseFirestore.instanceFor(app: getTenantApp(workspaceId));
-
-  /// The [FirebaseAuth] bound to the active (or [workspaceId]) project.
-  FirebaseAuth getAuth([String? workspaceId]) =>
-      FirebaseAuth.instanceFor(app: getTenantApp(workspaceId));
-
-  /// The [FirebaseMessaging] instance for the active project.
-  ///
-  /// firebase_messaging 15.x only supports the default Firebase app, so this
-  /// always returns the default project's messaging instance.
-  FirebaseMessaging getMessaging([String? workspaceId]) =>
-      FirebaseMessaging.instance;
 
   /// Disposes the [FirebaseApp] for [workspaceId] and removes it from the
   /// cache. When the disposed app was active, the default project becomes
@@ -229,10 +320,20 @@ class FirebaseManager {
   ///
   /// Fails loudly if the app is still in use (e.g. open Firestore listeners);
   /// cancel dependent streams before calling this.
+  ///
+  /// Idempotent: safely handles being called when the app has already been
+  /// deleted or removed from the cache.
   Future<void> disposeTenant(String workspaceId) async {
     if (workspaceId == defaultApp.name) {
       throw ArgumentError(
         'The default Firebase app cannot be disposed via disposeTenant().',
+      );
+    }
+    if (_isProvisioning(workspaceId)) {
+      throw StateError(
+        'Cannot dispose the tenant Firebase app for "$workspaceId" while a '
+        'provisioning operation is still in progress. Wait for the provisioning '
+        'to complete (success or failure) before disposing the app.',
       );
     }
     final app = _apps[workspaceId];
@@ -246,7 +347,11 @@ class FirebaseManager {
       _contextApplier?.call(context);
     }
 
-    await app.delete();
+    try {
+      await app.delete();
+    } catch (_) {
+      // App may already have been deleted; ignore and clean up cache anyway.
+    }
     _apps.remove(workspaceId);
   }
 

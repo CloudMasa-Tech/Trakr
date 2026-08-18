@@ -116,7 +116,7 @@ class CompanyAnalyticsService {
     try {
       final snap = await _firestore
           .collection('users')
-          .where('role', isEqualTo: 'company_admin')
+          .where('role', whereIn: const ['admin', 'company_admin'])
           .limit(1000)
           .get();
       return snap.docs.length;
@@ -185,7 +185,7 @@ class CompanyAnalyticsService {
     Stream<QuerySnapshot<Map<String, dynamic>>> usersStream() {
       return _firestore
           .collection('users')
-          .where('role', isEqualTo: 'company_admin')
+          .where('role', whereIn: const ['admin', 'company_admin'])
           .snapshots();
     }
 

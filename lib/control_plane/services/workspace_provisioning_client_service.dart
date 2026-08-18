@@ -1,7 +1,6 @@
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 
 import '../control_plane_firebase.dart';
@@ -12,6 +11,7 @@ import '../models/workspace_firebase_config.dart';
 import '../models/workspace_provision_request.dart';
 import '../models/workspace_status.dart';
 import '../repositories/tenant_identity_repository.dart';
+import 'firebase_config_validator.dart';
 import 'tenant_provisioner.dart';
 import 'workspace_registry_service.dart';
 
@@ -67,6 +67,13 @@ class WorkspaceProvisioningClientService {
   final WorkspaceRegistryService _registry;
   final TenantProvisioner _provisioner;
 
+  /// Caches the generated Company Admin password per admin email for the
+  /// lifetime of this service instance (one session of the Super Admin
+  /// console). A retry of a partially-failed run MUST reuse the original
+  /// password so the tenant auth account can be re-authenticated and its uid
+  /// recovered by [DirectTenantProvisioner]. Passwords are never persisted.
+  final Map<String, String> _passwordsByEmail = <String, String>{};
+
   FirebaseFirestore get _firestore => ControlPlaneFirebase.instance.firestore;
 
   /// Generates a unique, URL-safe id for a provisioning audit-log doc.
@@ -74,6 +81,19 @@ class WorkspaceProvisioningClientService {
     final millis = DateTime.now().millisecondsSinceEpoch;
     final rand = Random().nextInt(0xFFFFFF).toRadixString(16).padLeft(6, '0');
     return 'provision-$millis-$rand';
+  }
+
+  /// Generates a deterministic [workspaceId] from [workspaceCode].
+  /// The workspaceId is the workspace code itself, ensuring idempotent retry:
+  /// the same workspace code always maps to the same workspaceId, so company/
+  /// user/ admin documents can use deterministic IDs (companies/{workspaceId},
+  /// admins/{workspaceId}) without generating random IDs.
+  static String generateWorkspaceIdFromCode(String workspaceCode) {
+    final normalized = workspaceCode.trim().toLowerCase();
+    // Ensure the workspaceId is a valid Firestore document ID (no dots,
+    // slash, or other invalid characters).
+    final safe = normalized.replaceAll(RegExp(r'[^a-z0-9-]'), '');
+    return safe.isEmpty ? 'workspace' : safe;
   }
 
   /// Provisions [request] end to end, streaming progress into
@@ -91,7 +111,7 @@ class WorkspaceProvisioningClientService {
     final industry = request.industry.trim();
     final adminEmail = request.companyAdminEmail.trim().toLowerCase();
     final targetFirebaseAccountEmail =
-        request.targetFirebaseAccountEmail.trim().toLowerCase();
+        request.targetFirebaseAccountEmail?.trim().toLowerCase() ?? '';
 
     if (workspaceName.isEmpty) throw Exception('Workspace name is required');
     if (companyName.isEmpty) throw Exception('Company name is required');
@@ -100,22 +120,108 @@ class WorkspaceProvisioningClientService {
     if (!adminEmail.contains('@')) {
       throw Exception('A valid Company Admin email is required');
     }
-    if (!targetFirebaseAccountEmail.contains('@')) {
+    if (targetFirebaseAccountEmail.isNotEmpty &&
+        !targetFirebaseAccountEmail.contains('@')) {
       throw Exception('A valid Firebase account email is required');
     }
 
+    // ── Firebase project mapping ─────────────────────────────────────────
+    // The dedicated Firebase project is created manually in the Firebase
+    // Console and its CLIENT-side configuration is uploaded in the Create
+    // Workspace form. Every workspace must map to its OWN Firebase project;
+    // the shared TRAKR platform project can never be used as a tenant project.
+    final uploadedConfig = request.firebaseConfig;
+    if (uploadedConfig == null || !uploadedConfig.isValid) {
+      throw Exception(
+        'Invalid Firebase configuration. Upload the client-side Firebase '
+        'config for the workspace\'s dedicated project and confirm the '
+        'mapping before provisioning.',
+      );
+    }
+    final firebaseProjectId = uploadedConfig.projectId;
+    if (firebaseProjectId.trim().isEmpty) {
+      throw Exception(
+        'Missing projectId. Verify the uploaded file is a client-side '
+        'Firebase configuration.',
+      );
+    }
+
+    // Validate that this is NOT the shared TRAKR platform project.
+    // In Spark plan mode, each workspace has its own dedicated project.
+    // The Master project is never used as a tenant project.
+    if (FirebaseConfigValidator.isPlatformProject(firebaseProjectId)) {
+      throw Exception(
+        'The uploaded Firebase configuration points to the shared TRAKR '
+        'platform project. Every workspace must map to its own dedicated '
+        'Firebase project created in the Firebase Console. '
+        'serviceAccountKey.json and private keys are never accepted.',
+      );
+    }
+
     final adminName = _adminNameFromEmail(adminEmail);
-    final adminPassword = _generateAdminPassword();
+    final adminPassword = _passwordsByEmail[adminEmail] ??=
+        _generateAdminPassword();
 
-    final workspaceCode =
-        await _registry.generateUniqueWorkspaceCode(workspaceName);
+    // ── Retry resolution ───────────────────────────────────────────────
+    // A previous failed run for the same admin email keeps its registry entry
+    // in `provisioning` state. Reuse that entry (same workspaceId/code) so a
+    // retry resumes instead of creating a duplicate workspace with a
+    // new -2/-3 suffix. A retry also reuses the cached password so the tenant
+    // auth account created by the earlier run can be recovered.
+    final existingMatches = await _registry.listByAdminEmail(adminEmail);
+    String? retriedWorkspaceId;
+    String? retriedWorkspaceCode;
+    for (final match in existingMatches) {
+      if (match.status == WorkspaceStatus.provisioning) {
+        if (retriedWorkspaceId == null ||
+            match.companyName.trim().toLowerCase() ==
+                companyName.trim().toLowerCase()) {
+          retriedWorkspaceId = match.workspaceId;
+          retriedWorkspaceCode = match.workspaceCode;
+        }
+      } else {
+        throw Exception(
+          'Admin email "$adminEmail" is already bound to an active workspace '
+          '("${match.companyName}" · ${match.workspaceCode}). Use a different '
+          'admin email.',
+        );
+      }
+    }
+
+    final String workspaceCode;
+    final String finalWorkspaceId;
+    if (retriedWorkspaceId != null && retriedWorkspaceCode != null) {
+      // The retried workspace must still map to the SAME Firebase project the
+      // failed run was registered against; otherwise the retry would silently
+      // re-point an existing registration at a new project.
+      final retried = existingMatches
+          .firstWhere((match) => match.workspaceId == retriedWorkspaceId);
+      if (retried.firebaseProjectId.trim().isNotEmpty &&
+          retried.firebaseProjectId.trim() != firebaseProjectId) {
+        throw Exception(
+          'This admin email is already registered to the failed workspace '
+          '"$retriedWorkspaceCode" (id "$retriedWorkspaceId"), which was '
+          'mapped to Firebase project "${retried.firebaseProjectId}". '
+          'Re-upload the client-side configuration of THAT project to retry '
+          'it, or use a different admin email.',
+        );
+      }
+      workspaceCode = retriedWorkspaceCode;
+      finalWorkspaceId = retriedWorkspaceId;
+      debugPrint(
+        'WorkspaceProvisioningClientService.provision: resuming failed '
+        'workspace "$finalWorkspaceId" (code="$workspaceCode") for '
+        '"$adminEmail".',
+      );
+    } else {
+      final generatedCode =
+          await _registry.generateUniqueWorkspaceCode(workspaceName);
+      workspaceCode = generatedCode;
+      finalWorkspaceId = generateWorkspaceIdFromCode(generatedCode);
+    }
+
     final workspaceSlug = workspaceCode;
-    final defaultApp = Firebase.app();
-    final firebaseProjectId = defaultApp.options.projectId;
-    final firebaseConfig =
-        WorkspaceFirebaseConfig.fromFirebaseOptions(defaultApp.options);
-
-    final workspaceId = _firestore.collection('workspaces').doc().id;
+    final firebaseConfig = uploadedConfig;
     final logId = (request.logId?.trim().isNotEmpty ?? false)
         ? request.logId!.trim()
         : generateLogId();
@@ -138,7 +244,7 @@ class WorkspaceProvisioningClientService {
 
     await logRef.set({
       'logId': logId,
-      'workspaceId': workspaceId,
+      'workspaceId': finalWorkspaceId,
       'workspaceName': workspaceName,
       'status': 'processing',
       'startedAt': FieldValue.serverTimestamp(),
@@ -156,10 +262,10 @@ class WorkspaceProvisioningClientService {
     try {
       debugPrint(
         'WorkspaceProvisioningClientService.provision: registering workspace '
-        '"$workspaceCode" (id=$workspaceId)…',
+        '"$workspaceCode" (id=$finalWorkspaceId)…',
       );
       await _registerWorkspace(
-        workspaceId: workspaceId,
+        workspaceId: finalWorkspaceId,
         workspaceCode: workspaceCode,
         workspaceSlug: workspaceSlug,
         companyName: companyName,
@@ -172,13 +278,15 @@ class WorkspaceProvisioningClientService {
       );
       await logLine(
           'Registered workspace "$workspaceCode" in the control plane.');
-      await logLine('Using the shared Firebase project "$firebaseProjectId".');
+      await logLine(
+          'Mapped workspace to its dedicated Firebase project '
+          '"$firebaseProjectId" (configuration uploaded by the Super Admin).');
       debugPrint(
         'WorkspaceProvisioningClientService.provision: workspace registered.',
       );
 
       final workspace = Workspace(
-        workspaceId: workspaceId,
+        workspaceId: finalWorkspaceId,
         workspaceCode: workspaceCode,
         workspaceSlug: workspaceSlug,
         companyName: companyName,
@@ -231,9 +339,9 @@ class WorkspaceProvisioningClientService {
 
       debugPrint(
         'WorkspaceProvisioningClientService.provision: activating workspace '
-        '"$workspaceId"…',
+        '"$finalWorkspaceId"…',
       );
-      await _firestore.collection('workspaces').doc(workspaceId).update({
+      await _firestore.collection('workspaces').doc(finalWorkspaceId).update({
         'status': WorkspaceStatus.active.value,
         'onboardingStatus': WorkspaceOnboardingStatus.ready.value,
         'companyId': tenant.companyId,
@@ -251,7 +359,7 @@ class WorkspaceProvisioningClientService {
       );
       await TenantIdentityRepository().upsert(
         email: adminEmail,
-        workspaceId: workspaceId,
+        workspaceId: finalWorkspaceId,
         role: TenantIdentityRole.companyAdmin,
         name: adminName,
       );
@@ -266,13 +374,13 @@ class WorkspaceProvisioningClientService {
         'status': 'succeeded',
         'workspaceSlug': workspaceSlug,
         'workspaceCode': workspaceCode,
-        'workspaceId': workspaceId,
+        'workspaceId': finalWorkspaceId,
         'completedAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       });
 
       return WorkspaceProvisionResult(
-        workspaceId: workspaceId,
+        workspaceId: finalWorkspaceId,
         workspaceCode: workspaceCode,
         workspaceSlug: workspaceSlug,
         firebaseProjectId: firebaseProjectId,
@@ -285,7 +393,7 @@ class WorkspaceProvisioningClientService {
       final message = _errorMessage(e);
       debugPrint(
         'WorkspaceProvisioningClientService.provision: FAILED for workspace '
-        '"$workspaceId" (code="$workspaceCode") - $e\n$st',
+        '"$finalWorkspaceId" (code="$workspaceCode") - $e\n$st',
       );
       try {
         await logRef.update({
@@ -296,7 +404,7 @@ class WorkspaceProvisioningClientService {
         });
       } catch (_) {}
       try {
-        await _firestore.collection('workspaces').doc(workspaceId).update({
+        await _firestore.collection('workspaces').doc(finalWorkspaceId).update({
           'status': WorkspaceStatus.provisioning.value,
           'onboardingStatus': WorkspaceOnboardingStatus.failed.value,
           'error': message,
@@ -326,6 +434,7 @@ class WorkspaceProvisioningClientService {
       'companyName': companyName,
       'firebaseProjectId': firebaseProjectId,
       'firebaseConfig': firebaseConfig.toMap(),
+      'firebaseConfigured': true,
       'status': WorkspaceStatus.provisioning.value,
       'onboardingStatus': WorkspaceOnboardingStatus.configuring.value,
       'subscription': const Subscription(
@@ -341,7 +450,8 @@ class WorkspaceProvisioningClientService {
       'adminEmail': adminEmail,
       'adminName': adminName,
       'workspaceName': workspaceName,
-      'targetFirebaseAccountEmail': targetFirebaseAccountEmail,
+      if (targetFirebaseAccountEmail.isNotEmpty)
+        'targetFirebaseAccountEmail': targetFirebaseAccountEmail,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });

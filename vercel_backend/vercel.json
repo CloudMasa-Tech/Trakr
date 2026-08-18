@@ -3,14 +3,6 @@
     {
       "path": "/api/qrNotifications",
       "schedule": "0 3 * * *"
-    },
-    {
-      "path": "/api/syncMissedCheckout",
-      "schedule": "*/15 * * * *"
-    },
-    {
-      "path": "/api/attendanceReminders",
-      "schedule": "*/15 * * * *"
     }
   ]
 }

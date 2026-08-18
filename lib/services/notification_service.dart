@@ -69,11 +69,11 @@ class NotificationService {
   static const String actionView = 'view';
   static const String brand = 'TЯAKR';
   static const String _vercelNotificationUrl =
-      'https://vercel-backend-amber-iota.vercel.app/api/sendNotification';
+      'https://trakr-six.vercel.app/api/sendNotification';
   static const String _vercelNotificationActionUrl =
-      'https://vercel-backend-amber-iota.vercel.app/api/notificationAction';
+      'https://trakr-six.vercel.app/api/notificationAction';
   static const String _vercelBroadcastUrl =
-      'https://vercel-backend-amber-iota.vercel.app/api/broadcastNotification';
+      'https://trakr-six.vercel.app/api/broadcastNotification';
 
   static Future<void> showBackgroundNotification(RemoteMessage message) async {
     if (kIsWeb || message.notification != null) return;

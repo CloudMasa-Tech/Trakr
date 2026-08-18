@@ -5,8 +5,7 @@
 enum WorkspaceStatus {
   provisioning,
   active,
-  suspended,
-  decommissioned;
+  suspended;
 
   /// The wire value stored in Firestore.
   String get value {
@@ -17,8 +16,6 @@ enum WorkspaceStatus {
         return 'active';
       case WorkspaceStatus.suspended:
         return 'suspended';
-      case WorkspaceStatus.decommissioned:
-        return 'decommissioned';
     }
   }
 
@@ -31,8 +28,6 @@ enum WorkspaceStatus {
         return 'Active';
       case WorkspaceStatus.suspended:
         return 'Suspended';
-      case WorkspaceStatus.decommissioned:
-        return 'Decommissioned';
     }
   }
 
@@ -46,8 +41,6 @@ enum WorkspaceStatus {
         return WorkspaceStatus.active;
       case 'suspended':
         return WorkspaceStatus.suspended;
-      case 'decommissioned':
-        return WorkspaceStatus.decommissioned;
       default:
         return null;
     }

@@ -12,10 +12,7 @@ enum AllocationStatus {
   available,
 
   /// Reserved by a workspace during (or after) provisioning.
-  allocated,
-
-  /// Permanently taken out of the pool (e.g. being decommissioned).
-  decommissioned;
+  allocated;
 
   /// The wire value stored in Firestore.
   String get value {
@@ -24,8 +21,6 @@ enum AllocationStatus {
         return 'available';
       case AllocationStatus.allocated:
         return 'allocated';
-      case AllocationStatus.decommissioned:
-        return 'decommissioned';
     }
   }
 
@@ -36,8 +31,6 @@ enum AllocationStatus {
         return 'Available';
       case AllocationStatus.allocated:
         return 'Allocated';
-      case AllocationStatus.decommissioned:
-        return 'Decommissioned';
     }
   }
 
@@ -49,8 +42,6 @@ enum AllocationStatus {
         return AllocationStatus.available;
       case 'allocated':
         return AllocationStatus.allocated;
-      case 'decommissioned':
-        return AllocationStatus.decommissioned;
       default:
         return null;
     }

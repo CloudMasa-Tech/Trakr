@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../../firebase/firebase_manager.dart';
+import '../../firebase/firebase_context.dart';
 import '../models/workspace_status.dart';
 import 'workspace_registry_service.dart';
 
@@ -52,7 +54,6 @@ class CrossProjectAnalyticsService {
       WorkspaceStatus.active => 100,
       WorkspaceStatus.provisioning => 50,
       WorkspaceStatus.suspended => 30,
-      WorkspaceStatus.decommissioned => 0,
     };
   }
 
@@ -61,5 +62,83 @@ class CrossProjectAnalyticsService {
   Future<int> getGlobalTotalUsers() async {
     final snapshot = await _firestore.collection('users').count().get();
     return snapshot.count ?? 0;
+  }
+
+  /// Fetches user counts from the tenant project for a workspace.
+  ///
+  /// Initializes the tenant FirebaseApp using the workspace's stored Firebase
+  /// configuration, then queries both the `staff` and `users` collections to
+  /// build a merged breakdown by role.
+  ///
+  /// Returns a map with keys: 'total', 'staff', 'managers', 'admins'.
+  Future<Map<String, int>> getWorkspaceUserCounts(String workspaceId) async {
+    final workspace = await _registry.resolveById(workspaceId);
+    if (workspace == null || !workspace.firebaseConfigured) {
+      return {'total': 0, 'staff': 0, 'managers': 0, 'admins': 0};
+    }
+
+    try {
+      // Initialize the tenant app for this workspace
+      final tenantApp = await FirebaseManager.instance.initializeTenantApp(
+        workspaceId: workspace.workspaceId,
+        options: workspace.firebaseConfig.toFirebaseOptions(),
+      );
+      final context = FirebaseContext.fromApp(tenantApp);
+      final tenantFirestore = context.firestore;
+
+      // Query staff collection
+      final staffSnapshot = await tenantFirestore.collection('staff').get();
+      int staffCount = 0;
+      int managerCount = 0;
+      int adminCount = 0;
+
+      for (final doc in staffSnapshot.docs) {
+        final data = doc.data();
+        final role = (data['role'] as String?)?.toLowerCase() ?? '';
+        final roleId = (data['roleId'] as String?)?.toLowerCase() ?? '';
+
+        if (role == 'admin' || roleId == 'company_admin') {
+          adminCount++;
+        } else if (role == 'manager' || roleId == 'manager') {
+          managerCount++;
+        } else {
+          staffCount++;
+        }
+      }
+
+      // Query users collection for any additional users not in staff
+      final usersSnapshot = await tenantFirestore.collection('users').get();
+      final staffEmails = staffSnapshot.docs
+          .map((d) => (d.data()['email'] as String?)?.toLowerCase() ?? '')
+          .where((e) => e.isNotEmpty)
+          .toSet();
+
+      for (final doc in usersSnapshot.docs) {
+        final data = doc.data();
+        final email = (data['email'] as String?)?.toLowerCase() ?? '';
+        if (email.isEmpty || staffEmails.contains(email)) continue;
+
+        final role = (data['role'] as String?)?.toLowerCase() ?? '';
+        final roleId = (data['roleId'] as String?)?.toLowerCase() ?? '';
+
+        if (role == 'admin' || roleId == 'company_admin') {
+          adminCount++;
+        } else if (role == 'manager' || roleId == 'manager') {
+          managerCount++;
+        } else {
+          staffCount++;
+        }
+      }
+
+      return {
+        'total': staffCount + managerCount + adminCount,
+        'staff': staffCount,
+        'managers': managerCount,
+        'admins': adminCount,
+      };
+    } catch (e) {
+      // Fail gracefully - return zeros if tenant project is inaccessible
+      return {'total': 0, 'staff': 0, 'managers': 0, 'admins': 0};
+    }
   }
 }

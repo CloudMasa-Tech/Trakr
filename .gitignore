@@ -33,6 +33,9 @@ migrate_working_dir/
 /build/
 /coverage/
 
+# Node
+node_modules/
+
 # Symbolication related
 app.*.symbols
 
@@ -47,5 +50,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+.firebase/
 .vercel
 .env*.local

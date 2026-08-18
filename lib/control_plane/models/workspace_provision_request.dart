@@ -1,12 +1,15 @@
-/// Payload for the backend `provisionWorkspace` callable.
-///
+import 'workspace_firebase_config.dart';
+
+/// Payload for workspace provisioning from the Super Admin onboarding flow.
 /// Captures everything the platform Super Admin needs to create a brand-new
 /// tenant workspace: the workspace identity, the company basic details, the
 /// email of the initial Company Admin (who receives login credentials), and the
-/// Google account under which the dedicated Firebase project is created.
+/// client-side Firebase configuration of the dedicated Firebase project that
+/// was created manually in the Firebase Console and uploaded during onboarding.
+/// All provisioning is handled client-side via [WorkspaceProvisioningClientService],
+/// which runs against the Master Firebase project using only the Firebase Client SDK.
 class WorkspaceProvisionRequest {
-  /// Display name of the workspace; drives the generated workspace code and the
-  /// new Firebase project id/display name.
+  /// Display name of the workspace; drives the generated workspace code.
   final String workspaceName;
 
   final String companyName;
@@ -17,8 +20,15 @@ class WorkspaceProvisionRequest {
   /// Email of the initial Company Admin; login credentials are delivered here.
   final String companyAdminEmail;
 
-  /// Google account that owns the dedicated Firebase project being created.
-  final String targetFirebaseAccountEmail;
+  /// The client-side Firebase configuration uploaded by the Super Admin for the
+  /// workspace's dedicated Firebase project. This is what the workspace is
+  /// mapped to — every workspace gets its OWN Firebase project.
+  final WorkspaceFirebaseConfig? firebaseConfig;
+
+  /// Google account that owns the dedicated Firebase project. Optional in the
+  /// current flow (the project is created manually in the Console, not by the
+  /// app); kept as an audit hint.
+  final String? targetFirebaseAccountEmail;
 
   /// Client-generated id of the `workspace_provision_logs` audit doc that
   /// streams provisioning progress while the callable runs.
@@ -31,7 +41,8 @@ class WorkspaceProvisionRequest {
     this.companyAddress,
     required this.industry,
     required this.companyAdminEmail,
-    required this.targetFirebaseAccountEmail,
+    this.firebaseConfig,
+    this.targetFirebaseAccountEmail,
     this.logId,
   });
 
@@ -44,7 +55,10 @@ class WorkspaceProvisionRequest {
         'companyAddress': companyAddress,
       'industry': industry,
       'companyAdminEmail': companyAdminEmail,
-      'targetFirebaseAccountEmail': targetFirebaseAccountEmail,
+      if (firebaseConfig != null) 'firebaseConfig': firebaseConfig!.toMap(),
+      if (targetFirebaseAccountEmail != null &&
+          targetFirebaseAccountEmail!.trim().isNotEmpty)
+        'targetFirebaseAccountEmail': targetFirebaseAccountEmail,
       if (logId != null && logId!.isNotEmpty) 'logId': logId,
     };
   }
@@ -57,6 +71,7 @@ class WorkspaceProvisionRequest {
       companyAddress: companyAddress,
       industry: industry,
       companyAdminEmail: companyAdminEmail,
+      firebaseConfig: firebaseConfig,
       targetFirebaseAccountEmail: targetFirebaseAccountEmail,
       logId: logId ?? this.logId,
     );

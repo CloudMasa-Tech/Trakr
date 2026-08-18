@@ -1,6 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-/// The role a login identity holds inside its tenant workspace.
+/// The role a login identity holds inside its tenant workspace. Uses the
+/// canonical role vocabulary (`admin` / `employee`) while still parsing the
+/// legacy `company_admin` / `user` values so older index documents keep
+/// resolving.
 enum TenantIdentityRole {
   companyAdmin,
   user;
@@ -9,9 +12,9 @@ enum TenantIdentityRole {
   String get value {
     switch (this) {
       case TenantIdentityRole.companyAdmin:
-        return 'company_admin';
+        return 'admin';
       case TenantIdentityRole.user:
-        return 'user';
+        return 'employee';
     }
   }
 
@@ -19,8 +22,14 @@ enum TenantIdentityRole {
   static TenantIdentityRole? fromValue(String? value) {
     switch (value) {
       case 'company_admin':
+      case 'companyAdmin':
+      case 'admin':
         return TenantIdentityRole.companyAdmin;
       case 'user':
+      case 'staff':
+      case 'engineer':
+      case 'manager':
+      case 'employee':
         return TenantIdentityRole.user;
       default:
         return null;

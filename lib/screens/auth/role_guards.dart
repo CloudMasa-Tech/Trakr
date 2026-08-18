@@ -5,11 +5,12 @@ import 'package:provider/provider.dart';
 import '../../providers/auth_session_provider.dart';
 import '../app_shell.dart';
 import '../employee/employee_home_screen.dart';
+import '../manager/manager_dashboard_screen.dart';
 import '../super_admin/super_admin_portal_screen.dart';
 import 'access_denied_screen.dart';
 import 'auth_shared.dart';
 
-/// Centralizes role → home routing so the redirect targets for the three app
+/// Centralizes role → home routing so the redirect targets for the four app
 /// roles live in exactly one place. Used by [AuthGateScreen] for the post-login
 /// redirect and by [RoleGuard] for protected named routes.
 class RoleRouter {
@@ -33,9 +34,11 @@ class RoleRouter {
     switch (role) {
       case AppUserRole.superAdmin:
         return SuperAdminPortalScreen(onLogout: onLogout);
-      case AppUserRole.companyAdmin:
+      case AppUserRole.admin:
         return AppShell(initialIndex: 0, onLogout: onLogout);
-      case AppUserRole.user:
+      case AppUserRole.manager:
+        return ManagerDashboardScreen(onLogout: onLogout);
+      case AppUserRole.employee:
         return EmployeeHomeScreen(role: role, onLogout: onLogout);
     }
   }

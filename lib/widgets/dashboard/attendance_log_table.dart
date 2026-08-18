@@ -177,6 +177,9 @@ class _AttendanceLogTableState extends State<AttendanceLogTable> {
                           minWidth: constraints.maxWidth > minWidth
                               ? constraints.maxWidth
                               : minWidth,
+                          maxWidth: constraints.maxWidth > minWidth
+                              ? constraints.maxWidth
+                              : minWidth,
                         ),
                         child: Column(
                           mainAxisSize: MainAxisSize.min,

@@ -1,8 +1,9 @@
-import '../../providers/auth_session_provider.dart';
+import '../control_plane_firebase.dart';
 import '../models/workspace.dart';
 import '../models/workspace_status.dart';
 import '../repositories/tenant_identity_repository.dart';
 import '../repositories/workspace_repository.dart';
+import 'super_admin_config_service.dart';
 
 /// What an email resolves to before any credentials are exchanged.
 enum LoginWorkspaceKind {
@@ -82,7 +83,11 @@ class LoginWorkspaceResolverService {
       return const LoginWorkspaceResolution.notFound();
     }
 
-    if (email == AuthSessionProvider.superAdminEmail) {
+    // The Super Admin identity is config-driven (Master `app_config` doc set by
+    // the setup tooling, with a `SUPERADMIN_EMAIL` dart-define fallback) — it is
+    // never hardcoded in the app.
+    await SuperAdminConfig.ensureLoaded(ControlPlaneFirebase.instance.firestore);
+    if (SuperAdminConfig.matches(email)) {
       return const LoginWorkspaceResolution.superAdmin();
     }
 
@@ -120,10 +125,6 @@ class LoginWorkspaceResolverService {
         return const LoginWorkspaceResolution.unavailable(
           'This workspace is currently suspended. '
           'Please contact your administrator for support.',
-        );
-      case WorkspaceStatus.decommissioned:
-        return const LoginWorkspaceResolution.unavailable(
-          'This workspace is no longer available.',
         );
     }
   }

@@ -212,6 +212,18 @@ class Sidebar extends StatelessWidget {
                     label: 'Team Directory',
                     onTap: onItemSelected),
                 _SidebarItem(
+                    index: 15,
+                    selectedIndex: selectedIndex,
+                    icon: Icons.admin_panel_settings_outlined,
+                    label: 'User Roles',
+                    onTap: onItemSelected),
+                _SidebarItem(
+                    index: 16,
+                    selectedIndex: selectedIndex,
+                    icon: Icons.work_outline_rounded,
+                    label: 'Designations',
+                    onTap: onItemSelected),
+                _SidebarItem(
                     index: 9,
                     selectedIndex: selectedIndex,
                     icon: Icons.assignment_late_outlined,

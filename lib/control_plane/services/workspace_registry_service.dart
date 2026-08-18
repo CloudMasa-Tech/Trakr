@@ -24,6 +24,21 @@ class WorkspaceRegistryService {
     return _repository.isCodeAvailable(workspaceCode);
   }
 
+  /// Whether a Firebase project is already mapped to another workspace.
+  ///
+  /// Enforces the "one workspace → one Firebase project" rule so a manually
+  /// created project can never be handed to two tenants. [excludeId] is used
+  /// when re-validating an existing workspace's own mapping.
+  Future<bool> isFirebaseProjectMapped(
+    String firebaseProjectId, {
+    String? excludeId,
+  }) {
+    return _repository.isFirebaseProjectMapped(
+      firebaseProjectId,
+      excludeId: excludeId,
+    );
+  }
+
   /// Generates a unique workspace code derived from [companyName].
   ///
   /// Produces a lowercase slug (e.g. `green-hospital`) and, if taken, appends a
@@ -49,6 +64,15 @@ class WorkspaceRegistryService {
   /// Resolves a workspace by its human-friendly code.
   Future<Workspace?> resolveByCode(String workspaceCode) {
     return _repository.getByCode(workspaceCode);
+  }
+
+  /// Every registered workspace whose `adminEmail` matches [adminEmail].
+  ///
+  /// Used by provisioning retry: when a previous run for the same admin email
+  /// failed and left the workspace in `provisioning` state, the retry resumes
+  /// that entry instead of creating a duplicate workspace.
+  Future<List<Workspace>> listByAdminEmail(String adminEmail) {
+    return _repository.getByAdminEmail(adminEmail);
   }
 
   /// Resolves a workspace by its stable id.

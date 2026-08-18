@@ -66,7 +66,7 @@ class _ManagerTeamMembersScreenState extends State<ManagerTeamMembersScreen> {
       context,
       currentManagerName: widget.managerName,
       currentManagerEmail: widget.managerEmail,
-      onboarderRole: AppUserRole.user,
+      onboarderRole: AppUserRole.employee,
     );
   }
 

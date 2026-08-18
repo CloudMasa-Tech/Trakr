@@ -4,27 +4,16 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-import '../../firebase/firebase_context_provider.dart';
-import '../../models/company.dart';
 import '../../models/staff.dart';
 import '../../providers/auth_session_provider.dart';
-import '../../services/manager_account_service.dart';
 import '../../services/email_service.dart';
+import '../../services/manager_account_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/staff_service.dart';
 import '../../theme/app_theme_colors.dart';
 import '../../utils/country_options.dart';
 import '../../utils/departments.dart';
 import '../../utils/profile_photo_picker.dart';
-
-// Fixed-brand palette for the onboard-user dialog (force-dark). Intentional
-// exception: file-scoped brand constants.
-const Color _ouPrimary = Color(0xFF0F766E);
-const Color _ouWhite = Color(0xFFFFFFFF);
-const Color _ouGreen600 = Color(0xFF43A047);
-const Color _ouRed600 = Color(0xFFE53935);
-const Color _ouRedAccent = Color(0xFFFF5252);
-const Color _ouOrange = Color(0xFFFF9800);
 
 class OnboardUserDialog extends StatefulWidget {
   final String currentManagerName;
@@ -88,22 +77,16 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   bool _pickingPhoto = false;
   String? _photoUrl;
 
-  _OnboardTarget _target = _OnboardTarget.engineer;
+  AppUserRole _assignedRole = AppUserRole.employee;
   String? _selectedDepartment;
 
   String? _selectedManagerName;
   List<_ManagerOption> _managerOptions = const [];
   bool _loadingManagers = true;
 
-  String? _selectedCompanyId;
-  List<Company> _companies = const [];
-  bool _loadingCompanies = true;
+  bool get _canAssignManager => widget.onboarderRole == AppUserRole.admin;
 
-  bool get _canAssignManager =>
-      widget.onboarderRole == AppUserRole.companyAdmin ||
-      widget.onboarderRole == AppUserRole.superAdmin;
-
-  static const _accent = _ouPrimary;
+  static const _accent = Color(0xFF0F766E);
   static const _border = AppThemeColors.darkBorder;
   static const _label = AppThemeColors.darkText;
   static const _subtle = AppThemeColors.darkMuted;
@@ -115,7 +98,6 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
         ? null
         : widget.currentManagerName.trim();
     _loadManagers();
-    _loadCompanies();
   }
 
   @override
@@ -134,20 +116,15 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
 
   Future<void> _loadManagers() async {
     try {
-      final snap = await FirebaseContextProvider.current.firestore
-          .collection('managers')
-          .get();
+      final snap =
+          await FirebaseFirestore.instance.collection('managers').get();
       final options = <_ManagerOption>[];
       for (final doc in snap.docs) {
         final data = doc.data();
         final name = (data['name'] as String? ?? '').trim();
         final email = (data['email'] as String? ?? '').trim();
         if (name.isEmpty) continue;
-        options.add(_ManagerOption(
-          name: name,
-          email: email,
-          companyId: data['companyId'] as String?,
-        ));
+        options.add(_ManagerOption(name: name, email: email));
       }
 
       final hasCurrent = options.any(
@@ -173,35 +150,6 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     } catch (_) {
       if (!mounted) return;
       setState(() => _loadingManagers = false);
-    }
-  }
-
-  Future<void> _loadCompanies() async {
-    try {
-      final snap = await FirebaseContextProvider.current.firestore
-          .collection('companies')
-          .get();
-      final companies = <Company>[];
-      for (final doc in snap.docs) {
-        final data = doc.data();
-        final name = (data['name'] as String? ?? '').trim();
-        if (name.isEmpty) continue;
-        companies.add(Company(
-          id: doc.id,
-          name: name,
-          isActive: data['isActive'] as bool? ?? true,
-        ));
-      }
-      companies
-          .sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
-      if (!mounted) return;
-      setState(() {
-        _companies = companies;
-        _loadingCompanies = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _loadingCompanies = false);
     }
   }
 
@@ -249,67 +197,20 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     return NetworkImage(raw);
   }
 
-  /// Resolves the tenant/company this user belongs to: first from the signed-in
-  /// user's `users` doc, falling back to the reporting manager's company.
-  Future<String?> _resolveCompanyId() async {
-    try {
-      final user = FirebaseContextProvider.current.auth.currentUser;
-      if (user != null) {
-        final doc = await FirebaseContextProvider.current.firestore
-            .collection('users')
-            .doc(user.uid)
-            .get();
-        final companyId = doc.data()?['companyId'] as String?;
-        if (companyId != null && companyId.trim().isNotEmpty) {
-          return companyId.trim();
-        }
-      }
-    } catch (_) {}
-    if (_target == _OnboardTarget.engineer &&
-        _selectedManagerName != null &&
-        _selectedManagerName!.trim().isNotEmpty) {
-      try {
-        final snap = await FirebaseContextProvider.current.firestore
-            .collection('managers')
-            .where('name', isEqualTo: _selectedManagerName!.trim())
-            .limit(1)
-            .get();
-        if (snap.docs.isNotEmpty) {
-          final companyId = snap.docs.first.data()['companyId'] as String?;
-          if (companyId != null && companyId.trim().isNotEmpty) {
-            return companyId.trim();
-          }
-        }
-      } catch (_) {}
-    }
-    return null;
-  }
-
   Future<void> _submit() async {
     if (_submitting) return;
     if (!_formKey.currentState!.validate()) return;
 
-    final isEmployeeOnboard = _target != _OnboardTarget.companyAdmin;
-    if (_target == _OnboardTarget.manager && !_canAssignManager) {
+    if (_assignedRole == AppUserRole.manager && !_canAssignManager) {
       _showError('Only admins can onboard a manager.');
       return;
     }
-    if (_target == _OnboardTarget.companyAdmin &&
-        widget.onboarderRole != AppUserRole.superAdmin) {
-      _showError('Only the Super Admin can onboard a company admin.');
-      return;
-    }
-    if (_target == _OnboardTarget.engineer &&
+    if (_assignedRole == AppUserRole.employee &&
         (_selectedManagerName == null || _selectedManagerName!.isEmpty)) {
       _showError('Please select a reporting manager.');
       return;
     }
-    if (_target == _OnboardTarget.companyAdmin &&
-        (_selectedCompanyId == null || _selectedCompanyId!.isEmpty)) {
-      _showError('Please select the company this admin belongs to.');
-      return;
-    }
-    if (isEmployeeOnboard && _selectedDepartment == null) {
+    if (_selectedDepartment == null) {
       _showError('Please select a designation.');
       return;
     }
@@ -318,143 +219,125 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
       return;
     }
 
-    if (isEmployeeOnboard) {
-      // Demographic validators
-      if (_selectedBloodGroup == null) {
-        _showError('Please select a blood group.');
-        return;
-      }
-      if (_selectedGender == null) {
-        _showError('Please select a gender.');
-        return;
-      }
-      if (_selectedNationality == null ||
-          _selectedNationality!.trim().isEmpty) {
-        _showError('Nationality is required.');
-        return;
-      }
-      if (_dob == null) {
-        _showError('Please select a date of birth.');
-        return;
-      }
-      if (_addressCtrl.text.trim().isEmpty) {
-        _showError('Address is required.');
-        return;
-      }
+    // Demographic validators
+    if (_selectedBloodGroup == null) {
+      _showError('Please select a blood group.');
+      return;
+    }
+    if (_selectedGender == null) {
+      _showError('Please select a gender.');
+      return;
+    }
+    if (_selectedNationality == null || _selectedNationality!.trim().isEmpty) {
+      _showError('Nationality is required.');
+      return;
+    }
+    if (_dob == null) {
+      _showError('Please select a date of birth.');
+      return;
+    }
+    if (_addressCtrl.text.trim().isEmpty) {
+      _showError('Address is required.');
+      return;
     }
 
     setState(() => _submitting = true);
     final email = _emailCtrl.text.trim().toLowerCase();
     final name = _nameCtrl.text.trim();
-    final department = _selectedDepartment ?? '';
+    final department = _selectedDepartment!;
     final password = _passwordCtrl.text.trim();
     final phone = '$_selectedDialCode ${_phoneCtrl.text.trim()}'.trim();
-    final nationality = _selectedNationality ?? '';
+    final nationality = _selectedNationality!;
     final salary = _parseSalary();
     var emailSent = false;
     String? emailError;
 
     try {
-      if (_target == _OnboardTarget.companyAdmin) {
-        await _managerAccountService.createCompanyAdminAccount(
+      if (_assignedRole == AppUserRole.employee) {
+        final emailTaken = await _staffService.isEmailAlreadyUsed(email);
+        if (emailTaken) {
+          _showError('An engineer with this email already exists.');
+          setState(() => _submitting = false);
+          return;
+        }
+
+        final staff = Staff(
+          id: '',
           name: name,
           email: email,
           phone: phone,
-          password: password,
-          companyId: _selectedCompanyId!,
+          department: department,
+          position: _positionCtrl.text.trim(),
+          employeeId: _employeeIdCtrl.text.trim(),
+          joinDate: _joinDate,
+          reportsTo: _selectedManagerName,
+          salary: salary,
+          isActive: _isActive,
+          password: _isActive ? password : null,
+          hasRegistered: _isActive,
+          photoUrl: _photoUrl,
+          bloodGroup: _selectedBloodGroup,
+          gender: _selectedGender,
+          nationality: nationality,
+          dob: _dob,
+          address: _addressCtrl.text.trim(),
         );
-      } else {
-        final companyId = await _resolveCompanyId();
-        if (_target == _OnboardTarget.engineer) {
-          final emailTaken = await _staffService.isEmailAlreadyUsed(email);
-          if (emailTaken) {
-            _showError('An engineer with this email already exists.');
-            setState(() => _submitting = false);
-            return;
-          }
 
-          final staff = Staff(
-            id: '',
+        await _staffService.addStaff(staff);
+      } else {
+        final managers = FirebaseFirestore.instance.collection('managers');
+        final existing =
+            await managers.where('email', isEqualTo: email).limit(1).get();
+        if (existing.docs.isNotEmpty) {
+          _showError('A manager with this email already exists.');
+          setState(() => _submitting = false);
+          return;
+        }
+
+        if (_isActive) {
+          await _managerAccountService.createManagerAccount(
             name: name,
             email: email,
+            password: password,
             phone: phone,
+            employeeId: _employeeIdCtrl.text.trim(),
             department: department,
             position: _positionCtrl.text.trim(),
-            employeeId: _employeeIdCtrl.text.trim(),
+            staffCount: 0,
+            maxStaff: int.tryParse(_maxStaffCtrl.text.trim()) ?? 20,
             joinDate: _joinDate,
-            reportsTo: _selectedManagerName,
+            status: 'active',
             salary: salary,
-            isActive: _isActive,
-            password: _isActive ? password : null,
-            hasRegistered: _isActive,
             photoUrl: _photoUrl,
             bloodGroup: _selectedBloodGroup,
             gender: _selectedGender,
             nationality: nationality,
             dob: _dob,
             address: _addressCtrl.text.trim(),
-            companyId: companyId,
           );
-
-          await _staffService.addStaff(staff);
         } else {
-          final managers =
-              FirebaseContextProvider.current.firestore.collection('managers');
-          final existing =
-              await managers.where('email', isEqualTo: email).limit(1).get();
-          if (existing.docs.isNotEmpty) {
-            _showError('A manager with this email already exists.');
-            setState(() => _submitting = false);
-            return;
-          }
-
-          if (_isActive) {
-            await _managerAccountService.createManagerAccount(
-              name: name,
-              email: email,
-              password: password,
-              phone: phone,
-              employeeId: _employeeIdCtrl.text.trim(),
-              department: department,
-              position: _positionCtrl.text.trim(),
-              staffCount: 0,
-              maxStaff: int.tryParse(_maxStaffCtrl.text.trim()) ?? 20,
-              joinDate: _joinDate,
-              status: 'active',
-              salary: salary,
-              photoUrl: _photoUrl,
-              bloodGroup: _selectedBloodGroup,
-              gender: _selectedGender,
-              nationality: nationality,
-              dob: _dob,
-              address: _addressCtrl.text.trim(),
-              companyId: companyId,
-            );
-          } else {
-            await managers.add({
-              'name': name,
-              'email': email,
-              'phone': phone,
-              'employeeId': _employeeIdCtrl.text.trim(),
-              'department': department,
-              'position': _positionCtrl.text.trim(),
-              'joinDate': Timestamp.fromDate(_joinDate),
-              'status': 'inactive',
-              'salary': salary,
-              'photoUrl': _photoUrl,
-              'staffCount': 0,
-              'maxStaff': int.tryParse(_maxStaffCtrl.text.trim()) ?? 20,
-              'hasRegistered': false,
-              'companyId': companyId,
-              'createdAt': FieldValue.serverTimestamp(),
-              'updatedAt': FieldValue.serverTimestamp(),
-              'bloodGroup': _selectedBloodGroup,
-              'gender': _selectedGender,
-              'nationality': nationality,
-              'dob': _dob != null ? Timestamp.fromDate(_dob!) : null,
-              'address': _addressCtrl.text.trim(),
-            });
-          }
+          await managers.add({
+            'name': name,
+            'email': email,
+            'phone': phone,
+            'employeeId': _employeeIdCtrl.text.trim(),
+            'department': department,
+            'position': _positionCtrl.text.trim(),
+            'joinDate': Timestamp.fromDate(_joinDate),
+            'status': 'inactive',
+            'salary': salary,
+            'photoUrl': _photoUrl,
+            'staffCount': 0,
+            'maxStaff': int.tryParse(_maxStaffCtrl.text.trim()) ?? 20,
+            'hasRegistered': false,
+            'createdAt': FieldValue.serverTimestamp(),
+            'updatedAt': FieldValue.serverTimestamp(),
+            'bloodGroup': _selectedBloodGroup,
+            'gender': _selectedGender,
+            'nationality': nationality,
+            'dob': _dob != null ? Timestamp.fromDate(_dob!) : null,
+            'address': _addressCtrl.text.trim(),
+          });
         }
       }
 
@@ -464,40 +347,27 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             recipientEmail: email,
             password: password,
             roleLabel:
-                _target == _OnboardTarget.manager ? 'manager' : 'employee',
+                _assignedRole == AppUserRole.manager ? 'manager' : 'employee',
             recipientName: name,
           );
           emailSent = true;
 
-          if (_target == _OnboardTarget.companyAdmin) {
-            // Company admins get the security notice push as well.
-            await NotificationService().sendNotificationToUser(
-              identifier: email,
-              title: 'Welcome to TRAKR!',
-              body:
-                  'Your login credentials: User ID: $email and Temporary Password: $password. Please log in and change your password.',
-            );
-          } else {
-            // Send credentials push notification to the employee
-            await NotificationService().sendNotificationToUser(
-              identifier: email,
-              title: 'Welcome to the Team!',
-              body:
-                  'Your login credentials: User ID: $email and Temporary Password: $password. Please log in and change your password.',
-            );
-          }
+          // Send credentials push notification to the employee
+          await NotificationService().sendNotificationToUser(
+            identifier: email,
+            title: 'Welcome to the Team!',
+            body:
+                'Your login credentials: User ID: $email and Temporary Password: $password. Please log in and change your password.',
+          );
 
           // Save credentials notification in Firestore
-          await FirebaseContextProvider.current.firestore
-              .collection('notifications')
-              .add({
+          await FirebaseFirestore.instance.collection('notifications').add({
             'recipient': email,
             'type': 'Email',
             'content':
                 'Welcome! Your login credentials: User ID: $email, Password: $password.',
             'status': 'Sent',
             'suppressFirestorePush': true,
-            'allowFirestorePush': false,
             'timestamp': FieldValue.serverTimestamp(),
           });
 
@@ -510,16 +380,13 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
           );
 
           // Save security notification in Firestore
-          await FirebaseContextProvider.current.firestore
-              .collection('notifications')
-              .add({
+          await FirebaseFirestore.instance.collection('notifications').add({
             'recipient': email,
             'type': 'Security',
             'content':
                 'Important: Please change your temporary password for security purposes.',
             'status': 'Sent',
             'suppressFirestorePush': true,
-            'allowFirestorePush': false,
             'timestamp': FieldValue.serverTimestamp(),
           });
         } catch (e) {
@@ -531,10 +398,11 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
       Navigator.of(context).pop(true);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          backgroundColor: emailError == null ? _ouGreen600 : _ouOrange,
+          backgroundColor:
+              emailError == null ? Colors.green.shade600 : Colors.orange,
           content: Text(
             !_isActive
-                ? 'Onboarded $name. Login access is disabled.'
+                ? 'Onboarded $name as ${_assignedRole.label}. Login access is disabled.'
                 : emailSent
                     ? 'Created login for $email and sent the credentials by email.'
                     : 'Created login for $email, but email was not sent. $emailError',
@@ -550,7 +418,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   void _showError(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        backgroundColor: _ouRed600,
+        backgroundColor: Colors.red.shade600,
         content: Text(message),
       ),
     );
@@ -612,71 +480,70 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                       const SizedBox(height: 14),
                       _twoCol(
                         _buildPhoneField(),
-                        _target == _OnboardTarget.companyAdmin
-                            ? _buildCompanyDropdown()
-                            : _field(
-                                controller: _employeeIdCtrl,
-                                label: 'Employee ID',
-                                hint: 'EMP-1024',
-                                required: true,
-                              ),
-                      ),
-                      if (_target != _OnboardTarget.companyAdmin) ...[
-                        const SizedBox(height: 14),
-                        _twoCol(
-                          _buildDepartmentDropdown(),
-                          _field(
-                            controller: _positionCtrl,
-                            label: 'Position',
-                            hint: 'Software Engineer',
-                            required: true,
-                          ),
-                        ),
-                        const SizedBox(height: 14),
                         _field(
-                          controller: _salaryCtrl,
-                          label: 'Salary',
-                          hint: '50000',
-                          keyboardType: const TextInputType.numberWithOptions(
-                            decimal: true,
-                          ),
-                          validator: _salaryValidator,
-                        ),
-                        const SizedBox(height: 14),
-                        _target == _OnboardTarget.manager
-                            ? _twoCol(
-                                _buildJoinDate(),
-                                _field(
-                                  controller: _maxStaffCtrl,
-                                  label: 'Max Employees',
-                                  hint: '20',
-                                  required: true,
-                                  keyboardType: TextInputType.number,
-                                ),
-                              )
-                            : _twoCol(
-                                _buildJoinDate(),
-                                _buildManagerDropdown(),
-                              ),
-                        const SizedBox(height: 14),
-                        _twoCol(
-                          _buildBloodGroupDropdown(),
-                          _buildGenderDropdown(),
-                        ),
-                        const SizedBox(height: 14),
-                        _twoCol(
-                          _buildNationalityDropdown(),
-                          _buildDOBPicker(),
-                        ),
-                        const SizedBox(height: 14),
-                        _field(
-                          controller: _addressCtrl,
-                          label: 'Address',
-                          hint: 'Enter home address detail',
+                          controller: _employeeIdCtrl,
+                          label: 'Employee ID',
+                          hint: 'EMP-1024',
                           required: true,
-                          maxLines: 2,
                         ),
-                      ],
+                      ),
+                      const SizedBox(height: 14),
+                      _twoCol(
+                        _buildDepartmentDropdown(),
+                        _field(
+                          controller: _positionCtrl,
+                          label: 'Position',
+                          hint: 'Software Engineer',
+                          required: true,
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      _field(
+                        controller: _salaryCtrl,
+                        label: 'Salary',
+                        hint: '50000',
+                        keyboardType: const TextInputType.numberWithOptions(
+                          decimal: true,
+                        ),
+                        validator: _salaryValidator,
+                      ),
+                      const SizedBox(height: 14),
+                      if (_assignedRole == AppUserRole.employee)
+                        _twoCol(
+                          _buildJoinDate(),
+                          _buildManagerDropdown(),
+                        )
+                      else if (_assignedRole == AppUserRole.manager)
+                        _twoCol(
+                          _buildJoinDate(),
+                          _field(
+                            controller: _maxStaffCtrl,
+                            label: 'Max Employees',
+                            hint: '20',
+                            required: true,
+                            keyboardType: TextInputType.number,
+                          ),
+                        )
+                      else
+                        _buildJoinDate(),
+                      const SizedBox(height: 14),
+                      _twoCol(
+                        _buildBloodGroupDropdown(),
+                        _buildGenderDropdown(),
+                      ),
+                      const SizedBox(height: 14),
+                      _twoCol(
+                        _buildNationalityDropdown(),
+                        _buildDOBPicker(),
+                      ),
+                      const SizedBox(height: 14),
+                      _field(
+                        controller: _addressCtrl,
+                        label: 'Address',
+                        hint: 'Enter home address detail',
+                        required: true,
+                        maxLines: 2,
+                      ),
                       const SizedBox(height: 16),
                       _buildPasswordField(),
                       const SizedBox(height: 16),
@@ -771,7 +638,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                     height: 16,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: _ouWhite,
+                      color: Colors.white,
                     ),
                   )
                 : const Icon(Icons.check_rounded, size: 18),
@@ -924,7 +791,6 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   }
 
   Widget _buildRoleChooser() {
-    final options = _roleOptions();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -932,132 +798,51 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
         const SizedBox(height: 8),
         LayoutBuilder(
           builder: (context, c) {
-            final itemWidth =
-                c.maxWidth < 600 ? c.maxWidth : (c.maxWidth - 24) / 3;
-            return Wrap(
-              spacing: 12,
-              runSpacing: 12,
-              children: [
-                for (final option in options)
-                  SizedBox(
-                    width: itemWidth,
-                    child: _RoleTile(
-                      title: option.title,
-                      subtitle: option.subtitle,
-                      icon: option.icon,
-                      selected: _target == option.target,
-                      enabled: !_submitting && option.allowed,
-                      onTap: () => setState(() {
-                        _target = option.target;
-                        if (option.target == _OnboardTarget.companyAdmin) {
-                          _isActive = true;
-                        }
-                      }),
-                    ),
-                  ),
-              ],
+            final stack = c.maxWidth < 480;
+            final tiles = [
+              _RoleTile(
+                role: AppUserRole.employee,
+                title: 'Engineer',
+                subtitle: 'Reports to a manager. Scans QR for attendance.',
+                icon: Icons.engineering_rounded,
+                selected: _assignedRole == AppUserRole.employee,
+                enabled: !_submitting,
+                onTap: () =>
+                    setState(() => _assignedRole = AppUserRole.employee),
+              ),
+              _RoleTile(
+                role: AppUserRole.manager,
+                title: 'Manager',
+                subtitle: _canAssignManager
+                    ? 'Manages a team of engineers.'
+                    : 'Only admins can onboard managers.',
+                icon: Icons.supervisor_account_rounded,
+                selected: _assignedRole == AppUserRole.manager,
+                enabled: !_submitting && _canAssignManager,
+                onTap: () =>
+                    setState(() => _assignedRole = AppUserRole.manager),
+              ),
+            ];
+            if (stack) {
+              return Column(
+                children: [
+                  tiles[0],
+                  const SizedBox(height: 10),
+                  tiles[1],
+                ],
+              );
+            }
+            return IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(child: tiles[0]),
+                  const SizedBox(width: 12),
+                  Expanded(child: tiles[1]),
+                ],
+              ),
             );
           },
-        ),
-      ],
-    );
-  }
-
-  List<_RoleOption> _roleOptions() {
-    return [
-      const _RoleOption(
-        title: 'Engineer',
-        subtitle: 'Reports to a manager. Scans QR for attendance.',
-        icon: Icons.engineering_rounded,
-        target: _OnboardTarget.engineer,
-        allowed: true,
-      ),
-      _RoleOption(
-        title: 'Manager',
-        subtitle: _canAssignManager
-            ? 'Manages a team of engineers.'
-            : 'Only admins can onboard managers.',
-        icon: Icons.supervisor_account_rounded,
-        target: _OnboardTarget.manager,
-        allowed: _canAssignManager,
-      ),
-      _RoleOption(
-        title: 'Company Admin',
-        subtitle: widget.onboarderRole == AppUserRole.superAdmin
-            ? 'Manages a company and its users.'
-            : 'Only the Super Admin can onboard company admins.',
-        icon: Icons.apartment_rounded,
-        target: _OnboardTarget.companyAdmin,
-        allowed: widget.onboarderRole == AppUserRole.superAdmin,
-      ),
-    ];
-  }
-
-  Widget _buildCompanyDropdown() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _fieldLabel('Company', required: true),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: AppThemeColors.darkCanvas,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _border),
-          ),
-          child: _loadingCompanies
-              ? const SizedBox(
-                  height: 48,
-                  child: Row(
-                    children: [
-                      SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                      SizedBox(width: 10),
-                      Text('Loading companies…',
-                          style: TextStyle(color: _subtle)),
-                    ],
-                  ),
-                )
-              : DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    dropdownColor: AppThemeColors.darkSurface,
-                    value: _selectedCompanyId,
-                    hint: const Text('Select company',
-                        style: TextStyle(color: _subtle)),
-                    icon: const Icon(Icons.keyboard_arrow_down_rounded,
-                        color: _subtle),
-                    items: _companies
-                        .map((c) => DropdownMenuItem<String>(
-                              value: c.id,
-                              child: Row(
-                                children: [
-                                  const Icon(Icons.apartment_rounded,
-                                      size: 16, color: _subtle),
-                                  const SizedBox(width: 8),
-                                  Expanded(
-                                    child: Text(
-                                      c.name,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
-                                        color: _label,
-                                        fontWeight: FontWeight.w600,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ))
-                        .toList(),
-                    onChanged: _submitting
-                        ? null
-                        : (v) => setState(() => _selectedCompanyId = v),
-                  ),
-                ),
         ),
       ],
     );
@@ -1125,7 +910,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                 onPressed:
                     _submitting ? null : () => setState(() => _photoUrl = null),
                 icon: const Icon(Icons.delete_outline_rounded),
-                color: _ouRedAccent,
+                color: Colors.redAccent,
                 tooltip: 'Remove photo',
               );
 
@@ -1354,7 +1139,6 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   }
 
   Widget _buildAccessToggle() {
-    final isCompanyAdmin = _target == _OnboardTarget.companyAdmin;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
@@ -1366,21 +1150,19 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
         children: [
           const Icon(Icons.lock_open_rounded, size: 18, color: _subtle),
           const SizedBox(width: 10),
-          Expanded(
+          const Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                Text('Grant access',
+                    style: TextStyle(
+                        color: _label,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14)),
+                SizedBox(height: 2),
                 Text(
-                  isCompanyAdmin ? 'Login access required' : 'Grant access',
-                  style: const TextStyle(
-                      color: _label, fontWeight: FontWeight.w700, fontSize: 14),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  isCompanyAdmin
-                      ? 'Company admins always get a login account.'
-                      : 'Turn off to onboard without enabling login yet.',
-                  style: const TextStyle(color: _subtle, fontSize: 12),
+                  'Turn off to onboard without enabling login yet.',
+                  style: TextStyle(color: _subtle, fontSize: 12),
                 ),
               ],
             ),
@@ -1388,9 +1170,8 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
           Switch.adaptive(
             value: _isActive,
             activeTrackColor: _accent,
-            onChanged: _submitting || isCompanyAdmin
-                ? null
-                : (v) => setState(() => _isActive = v),
+            onChanged:
+                _submitting ? null : (v) => setState(() => _isActive = v),
           ),
         ],
       ),
@@ -1467,7 +1248,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
         if (required)
           const Padding(
             padding: EdgeInsets.only(left: 4),
-            child: Text('*', style: TextStyle(color: _ouRedAccent)),
+            child: Text('*', style: TextStyle(color: Colors.redAccent)),
           ),
       ],
     );
@@ -1638,34 +1419,12 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
 class _ManagerOption {
   final String name;
   final String email;
-  final String? companyId;
 
-  const _ManagerOption({
-    required this.name,
-    required this.email,
-    this.companyId,
-  });
-}
-
-enum _OnboardTarget { engineer, manager, companyAdmin }
-
-class _RoleOption {
-  final String title;
-  final String subtitle;
-  final IconData icon;
-  final _OnboardTarget target;
-  final bool allowed;
-
-  const _RoleOption({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-    required this.target,
-    required this.allowed,
-  });
+  const _ManagerOption({required this.name, required this.email});
 }
 
 class _RoleTile extends StatelessWidget {
+  final AppUserRole role;
   final String title;
   final String subtitle;
   final IconData icon;
@@ -1673,12 +1432,13 @@ class _RoleTile extends StatelessWidget {
   final bool enabled;
   final VoidCallback onTap;
 
-  static const _accent = _ouPrimary;
+  static const _accent = Color(0xFF0F766E);
   static const _border = AppThemeColors.darkBorder;
   static const _label = AppThemeColors.darkText;
   static const _subtle = AppThemeColors.darkMuted;
 
   const _RoleTile({
+    required this.role,
     required this.title,
     required this.subtitle,
     required this.icon,
@@ -1719,7 +1479,7 @@ class _RoleTile extends StatelessWidget {
                 child: Icon(
                   icon,
                   size: 18,
-                  color: selected ? _ouWhite : _subtle,
+                  color: selected ? Colors.white : _subtle,
                 ),
               ),
               const SizedBox(width: 12),

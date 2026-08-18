@@ -74,7 +74,7 @@ class CompanyService {
   ///
   /// Reuses the same invite flow used for onboarding users: the admin's login
   /// account is created through a secondary Firebase Auth app and the role is
-  /// assigned as [AppUserRole.companyAdmin] internally (not picked in the UI).
+  /// assigned as [AppUserRole.admin] internally (not picked in the UI).
   ///
   /// Pass [companyId] when the caller has already uploaded the company logo to
   /// Firebase Storage at `company_logos/{companyId}/logo`; the company document
@@ -328,7 +328,7 @@ class CompanyService {
       final userSnap = await _firestore
           .collection('users')
           .where('companyId', isEqualTo: companyId)
-          .where('role', isEqualTo: AppUserRole.companyAdmin.value)
+          .where('role', whereIn: const ['admin', 'company_admin'])
           .limit(1)
           .get();
       if (userSnap.docs.isNotEmpty) {
@@ -340,7 +340,7 @@ class CompanyService {
       final adminSnap = await _firestore
           .collection('admins')
           .where('companyId', isEqualTo: companyId)
-          .where('role', isEqualTo: AppUserRole.companyAdmin.value)
+          .where('role', whereIn: const ['admin', 'company_admin'])
           .limit(1)
           .get();
       if (adminSnap.docs.isNotEmpty) {

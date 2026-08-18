@@ -43,7 +43,6 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
     await WorkspaceDetailsScreen.show(
       context,
       workspaceId: workspace.workspaceId,
-      initial: workspace,
     );
   }
 
@@ -268,7 +267,6 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
             'Provisioning',
             'Active',
             'Suspended',
-            'Decommissioned'
           ],
           value: _statusFilter,
           onChanged: (v) => setState(() {
@@ -418,10 +416,28 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
           ),
           Expanded(
             flex: 2,
-            child: Text(
-              workspace.firebaseProjectId,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: kCoLabel, fontSize: 12.5),
+            child: Row(
+              children: [
+                if (workspace.firebaseConfigured) ...[
+                  const Icon(Icons.check_circle_rounded,
+                      color: kCoGreen, size: 14),
+                  const SizedBox(width: 5),
+                ],
+                Expanded(
+                  child: Text(
+                    workspace.firebaseProjectId.isEmpty
+                        ? 'Not configured'
+                        : workspace.firebaseProjectId,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: workspace.firebaseConfigured
+                          ? kCoLabel
+                          : kCoSubtle,
+                      fontSize: 12.5,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
           Expanded(

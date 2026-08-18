@@ -22,6 +22,8 @@ class ManagerModel {
   final String? designation;
   final String? reportsToUserId;
   final List<String>? permissionIds;
+  final String? roleName;
+  final int? roleLevel;
 
   // Demographic Fields
   final String? bloodGroup;
@@ -48,6 +50,8 @@ class ManagerModel {
     this.designation,
     this.reportsToUserId,
     this.permissionIds,
+    this.roleName,
+    this.roleLevel,
     this.bloodGroup,
     this.gender,
     this.nationality,
@@ -80,6 +84,8 @@ class ManagerModel {
       permissionIds: data['permissionIds'] != null
           ? List<String>.from(data['permissionIds'])
           : null,
+      roleName: data['roleName'] as String?,
+      roleLevel: data['roleLevel'] as int?,
       bloodGroup: data['bloodGroup'] as String?,
       gender: data['gender'] as String?,
       nationality: data['nationality'] as String?,
@@ -105,6 +111,8 @@ class ManagerModel {
         'designation': designation,
         'reportsToUserId': reportsToUserId,
         'permissionIds': permissionIds,
+        'roleName': roleName,
+        'roleLevel': roleLevel,
         'bloodGroup': bloodGroup,
         'gender': gender,
         'nationality': nationality,

@@ -26,6 +26,9 @@ class Staff {
   final String? designation;
   final String? reportsToUserId;
   final List<String>? permissionIds;
+  final String? roleId;
+  final String? roleName;
+  final int? roleLevel;
 
   // Demographic Fields
   final String? bloodGroup;
@@ -57,6 +60,9 @@ class Staff {
     this.designation,
     this.reportsToUserId,
     this.permissionIds,
+    this.roleId,
+    this.roleName,
+    this.roleLevel,
     this.bloodGroup,
     this.gender,
     this.nationality,
@@ -92,6 +98,9 @@ class Staff {
       permissionIds: data['permissionIds'] != null
           ? List<String>.from(data['permissionIds'])
           : null,
+      roleId: data['roleId'] as String?,
+      roleName: data['roleName'] as String?,
+      roleLevel: data['roleLevel'] as int?,
       bloodGroup: data['bloodGroup'] as String?,
       gender: data['gender'] as String?,
       nationality: data['nationality'] as String?,
@@ -125,6 +134,9 @@ class Staff {
       'designation': designation,
       'reportsToUserId': reportsToUserId,
       'permissionIds': permissionIds,
+      'roleId': roleId,
+      'roleName': roleName,
+      'roleLevel': roleLevel,
       'bloodGroup': bloodGroup,
       'gender': gender,
       'nationality': nationality,

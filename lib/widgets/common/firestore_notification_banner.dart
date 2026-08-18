@@ -67,7 +67,10 @@ class _FirestoreNotificationBannerState
             .collection('notifications')
             .where('recipient', whereIn: ids.sublist(i, end))
             .snapshots()
-            .listen(_handleSnapshot),
+            .listen(_handleSnapshot, onError: (Object error, StackTrace s) {
+          debugPrint('[FirestoreNotificationBanner] stream error: $error');
+          _primed = true;
+        }),
       );
     }
   }

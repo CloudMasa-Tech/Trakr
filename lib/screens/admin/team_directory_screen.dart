@@ -127,7 +127,7 @@ class _TeamDirectoryScreenState extends State<TeamDirectoryScreen> {
       context,
       currentManagerName: '',
       currentManagerEmail: '',
-      onboarderRole: auth.role ?? AppUserRole.companyAdmin,
+      onboarderRole: auth.role ?? AppUserRole.admin,
     );
   }
 

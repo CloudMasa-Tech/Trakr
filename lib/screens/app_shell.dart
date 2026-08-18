@@ -20,6 +20,8 @@ import 'admin/manager_requests_screen.dart';
 import 'admin/notifications_history_screen.dart';
 
 import 'admin/team_directory_screen.dart';
+import 'admin/user_roles_screen.dart';
+import 'admin/designations_screen.dart';
 import 'staff/checkout_request_screen.dart';
 import 'admin/payroll_screen.dart';
 import 'admin/monthly_analysis_screen.dart';
@@ -285,6 +287,10 @@ class _AppShellState extends State<AppShell> {
         return const MonthlyAnalysisScreen();
       case 14:
         return const NotificationsHistoryScreen();
+      case 15:
+        return const UserRolesScreen();
+      case 16:
+        return const DesignationsScreen();
       default:
         return const AttendanceDashboardScreen();
     }
@@ -1370,6 +1376,16 @@ class _AppShellState extends State<AppShell> {
             'index': 14,
             'label': 'Notifications',
             'icon': Icons.notifications_outlined
+          },
+          {
+            'index': 15,
+            'label': 'User Roles',
+            'icon': Icons.admin_panel_settings_outlined
+          },
+          {
+            'index': 16,
+            'label': 'Designations',
+            'icon': Icons.work_outline_rounded
           },
         ];
 

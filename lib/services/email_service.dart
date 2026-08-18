@@ -5,7 +5,7 @@ import 'package:http/http.dart' as http;
 
 class EmailService {
   static const String _vercelUrl =
-      'https://vercel-backend-amber-iota.vercel.app/api/sendCredentialEmail';
+      'https://trakr-six.vercel.app/api/sendCredentialEmail';
 
   static Future<void> sendAccountCredentials({
     required String recipientEmail,

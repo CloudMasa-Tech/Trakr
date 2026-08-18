@@ -256,6 +256,9 @@ class _TeamMembersTable extends StatelessWidget {
               minWidth: constraints.maxWidth > minWidth
                   ? constraints.maxWidth
                   : minWidth,
+              maxWidth: constraints.maxWidth > minWidth
+                  ? constraints.maxWidth
+                  : minWidth,
             ),
             child: Column(
               mainAxisSize: MainAxisSize.min,

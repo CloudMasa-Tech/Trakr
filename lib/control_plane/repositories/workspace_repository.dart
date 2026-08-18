@@ -52,6 +52,20 @@ class WorkspaceRepository {
     return Workspace.fromFirestore(snap.docs.first);
   }
 
+  /// Every workspace whose `adminEmail` matches [adminEmail] (the login
+  /// identity index). Used by the provisioning retry to resume a failed run
+  /// instead of creating a duplicate workspace.
+  Future<List<Workspace>> getByAdminEmail(String adminEmail) async {
+    final normalized = adminEmail.trim().toLowerCase();
+    if (normalized.isEmpty) return const <Workspace>[];
+    final snap = await _firestore
+        .collection(_collectionName)
+        .where('adminEmail', isEqualTo: normalized)
+        .limit(20)
+        .get();
+    return snap.docs.map(Workspace.fromFirestore).toList();
+  }
+
   /// Lists every workspace, newest first.
   Future<List<Workspace>> getAll() async {
     final snap = await _firestore
@@ -100,5 +114,27 @@ class WorkspaceRepository {
         .limit(1)
         .get();
     return snap.docs.isEmpty;
+  }
+
+  /// Whether a Firebase project is already mapped to a workspace.
+  ///
+  /// Each workspace must have its OWN Firebase project, so the same
+  /// `firebaseProjectId` can never be bound to two workspaces. [excludeId] lets
+  /// a workspace keep its own mapping when it is being re-checked (e.g. a
+  /// config re-upload edit) without tripping over itself.
+  Future<bool> isFirebaseProjectMapped(
+    String firebaseProjectId, {
+    String? excludeId,
+  }) async {
+    if (firebaseProjectId.trim().isEmpty) return false;
+    final snap = await _firestore
+        .collection(_collectionName)
+        .where('firebaseProjectId', isEqualTo: firebaseProjectId)
+        .limit(2)
+        .get();
+    for (final doc in snap.docs) {
+      if (doc.id != excludeId) return true;
+    }
+    return false;
   }
 }

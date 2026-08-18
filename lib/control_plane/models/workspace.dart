@@ -32,6 +32,10 @@ class Workspace {
   /// Credentials/options for the tenant Firebase project.
   final WorkspaceFirebaseConfig firebaseConfig;
 
+  /// Whether the tenant Firebase project has been mapped to this workspace by
+  /// the Super Admin (client config uploaded, validated and confirmed).
+  final bool firebaseConfigured;
+
   /// Lifecycle status of the workspace.
   final WorkspaceStatus status;
 
@@ -44,6 +48,18 @@ class Workspace {
   /// Optional support contact shown for this workspace.
   final String? supportEmail;
 
+  /// Company admin email (captured during onboarding).
+  final String? adminEmail;
+
+  /// Company admin name (derived from email during onboarding).
+  final String? adminName;
+
+  /// Company phone number (captured during onboarding).
+  final String? companyPhone;
+
+  /// Company industry (captured during onboarding).
+  final String? industry;
+
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -54,10 +70,15 @@ class Workspace {
     required this.companyName,
     required this.firebaseProjectId,
     required this.firebaseConfig,
+    this.firebaseConfigured = false,
     this.status = WorkspaceStatus.provisioning,
     this.onboardingStatus = WorkspaceOnboardingStatus.pending,
     this.subscription = const Subscription.empty(),
     this.supportEmail,
+    this.adminEmail,
+    this.adminName,
+    this.companyPhone,
+    this.industry,
     this.createdAt,
     this.updatedAt,
   });
@@ -83,6 +104,8 @@ class Workspace {
           (data['firebaseConfig'] as Map?) ?? const <String, dynamic>{},
         ),
       ),
+      firebaseConfigured: data['firebaseConfigured'] as bool? ??
+          _configCarriesCredentials(data['firebaseConfig']),
       status: WorkspaceStatus.fromValue(data['status'] as String?) ??
           WorkspaceStatus.provisioning,
       onboardingStatus: WorkspaceOnboardingStatus.fromValue(
@@ -94,6 +117,10 @@ class Workspace {
         ),
       ),
       supportEmail: data['supportEmail'] as String?,
+      adminEmail: data['adminEmail'] as String?,
+      adminName: data['adminName'] as String?,
+      companyPhone: data['companyPhone'] as String?,
+      industry: data['industry'] as String?,
       createdAt: _timestamp(data['createdAt']),
       updatedAt: _timestamp(data['updatedAt']),
     );
@@ -107,10 +134,15 @@ class Workspace {
       'companyName': companyName,
       'firebaseProjectId': firebaseProjectId,
       'firebaseConfig': firebaseConfig.toMap(),
+      'firebaseConfigured': firebaseConfigured,
       'status': status.value,
       'onboardingStatus': onboardingStatus.value,
       'subscription': subscription.toMap(),
       if (supportEmail != null) 'supportEmail': supportEmail,
+      if (adminEmail != null) 'adminEmail': adminEmail,
+      if (adminName != null) 'adminName': adminName,
+      if (companyPhone != null) 'companyPhone': companyPhone,
+      if (industry != null) 'industry': industry,
       'createdAt': createdAt != null
           ? Timestamp.fromDate(createdAt!)
           : FieldValue.serverTimestamp(),
@@ -128,10 +160,15 @@ class Workspace {
     String? companyName,
     String? firebaseProjectId,
     WorkspaceFirebaseConfig? firebaseConfig,
+    bool? firebaseConfigured,
     WorkspaceStatus? status,
     WorkspaceOnboardingStatus? onboardingStatus,
     Subscription? subscription,
     String? supportEmail,
+    String? adminEmail,
+    String? adminName,
+    String? companyPhone,
+    String? industry,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -142,10 +179,15 @@ class Workspace {
       companyName: companyName ?? this.companyName,
       firebaseProjectId: firebaseProjectId ?? this.firebaseProjectId,
       firebaseConfig: firebaseConfig ?? this.firebaseConfig,
+      firebaseConfigured: firebaseConfigured ?? this.firebaseConfigured,
       status: status ?? this.status,
       onboardingStatus: onboardingStatus ?? this.onboardingStatus,
       subscription: subscription ?? this.subscription,
       supportEmail: supportEmail ?? this.supportEmail,
+      adminEmail: adminEmail ?? this.adminEmail,
+      adminName: adminName ?? this.adminName,
+      companyPhone: companyPhone ?? this.companyPhone,
+      industry: industry ?? this.industry,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );
@@ -158,5 +200,16 @@ class Workspace {
     }
     if (value is DateTime) return value;
     return null;
+  }
+
+  /// Whether a stored `firebaseConfig` map carries usable credentials. Used as
+  /// a fallback so workspaces provisioned before `firebaseConfigured` was added
+  /// still report configured correctly.
+  static bool _configCarriesCredentials(dynamic rawConfig) {
+    if (rawConfig is! Map) return false;
+    final config = WorkspaceFirebaseConfig.fromMap(
+      Map<String, dynamic>.from(rawConfig),
+    );
+    return config.isValid;
   }
 }

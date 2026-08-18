@@ -40,10 +40,21 @@ class _PlatformDashboardModuleState extends State<PlatformDashboardModule> {
   List<Workspace> _seedWorkspaces = const [];
   List<PlatformActivityEvent> _seedActivity = const [];
 
+  late Stream<PlatformStats> _statsStream;
+  late Stream<List<Workspace>> _workspacesStream;
+  late Stream<List<PlatformActivityEvent>> _activityStream;
+
   @override
   void initState() {
     super.initState();
+    _initStreams();
     _bootstrap();
+  }
+
+  void _initStreams() {
+    _statsStream = _platform.streamStats();
+    _workspacesStream = _registry.streamWorkspaces();
+    _activityStream = _platform.streamActivity(limit: 10);
   }
 
   /// Fetches stats, companies, activity, and the admin-name map in parallel,
@@ -102,7 +113,11 @@ class _PlatformDashboardModuleState extends State<PlatformDashboardModule> {
 
   /// Forces the live streams to re-subscribe by rebuilding this widget's
   /// subtree (each `stream()` call returns a fresh Firestore stream).
-  void _retryStreams() => setState(() {});
+  void _retryStreams() {
+    setState(() {
+      _initStreams();
+    });
+  }
 
   Future<void> _refreshStats() async {
     setState(() => _reconciling = true);
@@ -145,7 +160,6 @@ class _PlatformDashboardModuleState extends State<PlatformDashboardModule> {
     await WorkspaceDetailsScreen.show(
       context,
       workspaceId: workspace.workspaceId,
-      initial: workspace,
     );
   }
 
@@ -174,7 +188,7 @@ class _PlatformDashboardModuleState extends State<PlatformDashboardModule> {
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 1200),
           child: StreamBuilder<PlatformStats>(
-            stream: _platform.streamStats(),
+            stream: _statsStream,
             initialData: _seedStats,
             builder: (context, statsSnap) {
               final stats = statsSnap.data ?? _seedStats;
@@ -638,7 +652,7 @@ class _PlatformDashboardModuleState extends State<PlatformDashboardModule> {
       subtitle: 'Latest client companies added to the platform.',
       icon: Icons.rocket_launch_outlined,
       child: StreamBuilder<List<Workspace>>(
-        stream: _registry.streamWorkspaces(),
+        stream: _workspacesStream,
         initialData: _seedWorkspaces,
         builder: (context, snapshot) {
           final palette = PortalPalette.of(context);
@@ -728,7 +742,7 @@ class _PlatformDashboardModuleState extends State<PlatformDashboardModule> {
       subtitle: 'Latest Super Admin platform actions.',
       icon: Icons.history_rounded,
       child: StreamBuilder<List<PlatformActivityEvent>>(
-        stream: _platform.streamActivity(limit: 10),
+        stream: _activityStream,
         initialData: _seedActivity,
         builder: (context, snapshot) {
           final palette = PortalPalette.of(context);

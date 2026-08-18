@@ -17,7 +17,6 @@ import 'providers/white_label_provider.dart';
 import 'router/app_router.dart';
 import 'services/notification_service.dart';
 import 'theme/app_theme_colors.dart';
-import 'services/bootstrap_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -29,16 +28,14 @@ void main() async {
       );
     }
 
-    // Ensure Master Super Admin exists before proceeding.
-    await BootstrapService.instance.bootstrapMasterAdmin();
+    // Clean, path-based URLs (no `#`) so workspace routes like
+    // `/workspace/cloudmasa-innovation-lab/dashboard` are real URL paths.
     if (kIsWeb) {
-      // Clean, path-based URLs (no `#`) so workspace routes like
-      // `/workspace/cloudmasa-innovation-lab/dashboard` are real URL paths.
       usePathUrlStrategy();
-      await FirebaseManager.instance.getAuth().setPersistence(
+      await FirebaseAuth.instance.setPersistence(
             Persistence.LOCAL,
           );
-      FirebaseManager.instance.getFirestore().settings = const Settings(
+      FirebaseFirestore.instance.settings = const Settings(
         webExperimentalForceLongPolling: true,
       );
     }

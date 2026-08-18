@@ -47,7 +47,7 @@ class FirestoreSeeds {
         'name': adminName,
         'email': cleanEmail,
         'authUid': uid,
-        'role': AppUserRole.companyAdmin.value,
+        'role': AppUserRole.admin.value,
         'status': 'active',
         'isActive': true,
         'photoUrl': verifiedAdmin.photoURL,
@@ -61,7 +61,7 @@ class FirestoreSeeds {
       await _firestore.collection('users').doc(uid).set({
         'name': adminName,
         'email': cleanEmail,
-        'role': AppUserRole.companyAdmin.value,
+        'role': AppUserRole.admin.value,
         'companyId': companyId,
         'updatedAt': FieldValue.serverTimestamp(),
         'createdAt': FieldValue.serverTimestamp(),

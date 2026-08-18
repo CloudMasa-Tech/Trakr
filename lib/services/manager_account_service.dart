@@ -38,6 +38,9 @@ class ManagerAccountService {
     String? address,
     String? photoUrl,
     String? companyId,
+    String? roleName,
+    int? roleLevel,
+    String? reportsToUserId,
   }) async {
     FirebaseApp? secondaryApp;
     User? createdUser;
@@ -83,6 +86,7 @@ class ManagerAccountService {
         'salary': salary,
         'photoUrl': photoUrl,
         'authUid': createdUser?.uid,
+        'roleId': 'manager',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'bloodGroup': bloodGroup,
@@ -91,6 +95,9 @@ class ManagerAccountService {
         'dob': dob != null ? Timestamp.fromDate(dob) : null,
         'address': address,
         'companyId': companyId,
+        'roleName': roleName,
+        'roleLevel': roleLevel,
+        'reportsToUserId': reportsToUserId,
       });
 
       await _firestore.collection('users').doc(createdUser!.uid).set({
@@ -98,6 +105,10 @@ class ManagerAccountService {
         'email': normalizedEmail,
         'phone': phone.trim(),
         'role': 'manager',
+        'roleId': 'manager',
+        'roleName': roleName,
+        'roleLevel': roleLevel,
+        'reportsToUserId': reportsToUserId,
         'managerId': managerRef.id,
         'companyId': companyId,
         'salary': salary,
@@ -142,6 +153,9 @@ class ManagerAccountService {
     required String phone,
     required String password,
     required String companyId,
+    String? roleName,
+    int? roleLevel,
+    String? reportsToUserId,
   }) async {
     FirebaseApp? secondaryApp;
     User? createdUser;
@@ -178,11 +192,15 @@ class ManagerAccountService {
         'name': name.trim(),
         'email': normalizedEmail,
         'phone': normalizedPhone,
-        'role': AppUserRole.companyAdmin.value,
+        'role': AppUserRole.admin.value,
         'status': 'active',
         'isActive': true,
         'authUid': createdUser?.uid,
         'companyId': companyId,
+        'roleId': 'company_admin',
+        'roleName': roleName,
+        'roleLevel': roleLevel ?? 80, // Default admin level
+        'reportsToUserId': reportsToUserId,
         'hasRegistered': true,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
@@ -193,9 +211,13 @@ class ManagerAccountService {
         'name': name.trim(),
         'email': normalizedEmail,
         'phone': normalizedPhone,
-        'role': AppUserRole.companyAdmin.value,
+        'role': AppUserRole.admin.value,
         'adminId': adminDocId,
         'companyId': companyId,
+        'roleId': 'company_admin',
+        'roleName': roleName,
+        'roleLevel': roleLevel ?? 80,
+        'reportsToUserId': reportsToUserId,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));

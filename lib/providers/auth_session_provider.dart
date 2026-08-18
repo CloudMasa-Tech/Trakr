@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../control_plane/models/workspace.dart';
 import '../control_plane/services/login_workspace_resolver_service.dart';
+import '../control_plane/services/super_admin_config_service.dart';
 import '../control_plane/services/tenant_bootstrap_service.dart';
 import '../firebase/firebase_context.dart';
 import '../firebase/firebase_context_provider.dart';
@@ -15,17 +16,22 @@ import '../services/staff_service.dart';
 import '../services/notification_service.dart';
 import '../services/platform_service.dart';
 
-enum AppUserRole { superAdmin, companyAdmin, user }
+/// The canonical app roles. Legacy role strings ('company_admin', 'staff',
+/// 'engineer', 'user', ...) are folded into these four by
+/// [AppUserRoleX.fromValue], so older Firestore data keeps working.
+enum AppUserRole { superAdmin, admin, manager, employee }
 
 extension AppUserRoleX on AppUserRole {
   String get value {
     switch (this) {
       case AppUserRole.superAdmin:
         return 'super_admin';
-      case AppUserRole.companyAdmin:
-        return 'company_admin';
-      case AppUserRole.user:
-        return 'user';
+      case AppUserRole.admin:
+        return 'admin';
+      case AppUserRole.manager:
+        return 'manager';
+      case AppUserRole.employee:
+        return 'employee';
     }
   }
 
@@ -33,10 +39,12 @@ extension AppUserRoleX on AppUserRole {
     switch (this) {
       case AppUserRole.superAdmin:
         return 'Super Admin';
-      case AppUserRole.companyAdmin:
-        return 'Company Admin';
-      case AppUserRole.user:
-        return 'User';
+      case AppUserRole.admin:
+        return 'Admin';
+      case AppUserRole.manager:
+        return 'Manager';
+      case AppUserRole.employee:
+        return 'Employee';
     }
   }
 
@@ -46,16 +54,18 @@ extension AppUserRoleX on AppUserRole {
       case 'superAdmin':
       case 'superadmin':
         return AppUserRole.superAdmin;
+      case 'admin':
       case 'company_admin':
       case 'companyAdmin':
-      case 'admin':
-        return AppUserRole.companyAdmin;
+      case 'companyadmin':
+        return AppUserRole.admin;
+      case 'manager':
+        return AppUserRole.manager;
       case 'user':
       case 'employee':
-      case 'manager':
       case 'engineer':
       case 'staff':
-        return AppUserRole.user;
+        return AppUserRole.employee;
       default:
         return null;
     }
@@ -68,7 +78,10 @@ class AuthSessionProvider extends ChangeNotifier {
   static const String _sessionUidKey = 'auth_session_uid';
 
   /// The only account permitted to hold the platform-wide `super_admin` role.
-  static const String superAdminEmail = 'keerthana.s@cloudmasa.com';
+  /// Resolved from the Master `app_config/admin_access` config doc (set by the
+  /// server-side setup tooling), with a `SUPERADMIN_EMAIL` dart-define fallback.
+  /// The password is never shipped in the app — it lives server-side only.
+  static String? get superAdminEmail => SuperAdminConfig.email;
 
   final GoogleSignIn? _googleSignIn = kIsWeb ? null : GoogleSignIn();
 
@@ -79,8 +92,14 @@ class AuthSessionProvider extends ChangeNotifier {
   StreamSubscription<User?>? _authSub;
   Timer? _roleRetryTimer;
   Timer? _authRestoreTimer;
+  int _authRestoreAttempts = 0;
   int _authChangeVersion = 0;
   Completer<void>? _pendingAuthCompleter;
+
+  /// Uid whose role resolution is currently in flight. Used to dedupe the
+  /// duplicate auth-state events (the constructor's direct call plus the
+  /// `idTokenChanges` listener) so the session role is resolved only once.
+  String? _resolvingUid;
 
   late FirebaseContext _context;
 
@@ -92,6 +111,9 @@ class AuthSessionProvider extends ChangeNotifier {
   AuthSessionProvider({FirebaseContext? context}) {
     debugPrint('[AuthSessionProvider] constructor called');
     setContext(context ?? FirebaseContextProvider.current, isInitial: true);
+    // Resolve the platform Super Admin email from the Master config doc (with
+    // a dart-define fallback) before any role/guard logic runs.
+    unawaited(SuperAdminConfig.ensureLoaded(_firestore));
     final currentUser = _auth.currentUser;
     if (currentUser != null) {
       debugPrint(
@@ -127,8 +149,9 @@ class AuthSessionProvider extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   bool get isAuthenticated => _user != null && _role != null;
   bool get isSuperAdmin => _role == AppUserRole.superAdmin;
-  bool get isCompanyAdmin => _role == AppUserRole.companyAdmin;
-  bool get isEmployee => _role == AppUserRole.user;
+  bool get isCompanyAdmin => _role == AppUserRole.admin;
+  bool get isManager => _role == AppUserRole.manager;
+  bool get isEmployee => _role == AppUserRole.employee;
 
   /// The signed-in tenant's URL slug for web dashboard routes, e.g.
   /// `cloudmasa-innovation-lab` (route `/workspace/:workspaceSlug/dashboard`).
@@ -183,8 +206,9 @@ class AuthSessionProvider extends ChangeNotifier {
   Future<void> _prepareStartupSessionRestore() async {
     final hasSavedSession = await _hasSavedSession();
     if (!hasSavedSession || _auth.currentUser != null) {
-      // Nothing to restore (fresh launch, signed out previously) — land on the
-      // login screen.
+      // Fresh launch (signed out previously), or an auth session already
+      // exists: nothing to restore from the saved cache — the auth listener
+      // owns any session that is still restoring asynchronously.
       _role = null;
       _isLoading = false;
       notifyListeners();
@@ -217,13 +241,18 @@ class AuthSessionProvider extends ChangeNotifier {
       await TenantBootstrapService.instance.clearLastWorkspace();
     }
 
-    // No reconnectable workspace: the saved session is orphaned (e.g. the
-    // Super Admin signed in on the Master project in a previous run without a
-    // tenant). Forget it and show the login screen.
-    await _clearActiveSession(null);
-    _role = null;
-    _isLoading = false;
-    notifyListeners();
+    // No reconnectable workspace: the saved session belongs to the Master
+    // project (e.g. the Super Admin). If an auth session resolved while we were
+    // restoring, NEVER clobber it — the Super Admin on web restores
+    // asynchronously, so `_handleAuthChanged` may have already set `_role`.
+    // Otherwise hand off to the bounded restore check instead of wiping the
+    // saved session out from under the auth listener.
+    if (_role != null || _auth.currentUser != null) {
+      _isLoading = false;
+      notifyListeners();
+      return;
+    }
+    _scheduleAuthRestoreCheck();
   }
 
   void _resolvePendingAuth() {
@@ -234,7 +263,6 @@ class AuthSessionProvider extends ChangeNotifier {
   }
 
   Future<void> _handleAuthChanged(User? user) async {
-    final authChangeVersion = ++_authChangeVersion;
     _user = user;
 
     if (user == null) {
@@ -260,6 +288,38 @@ class AuthSessionProvider extends ChangeNotifier {
     debugPrint(
         '[AuthSessionProvider._handleAuthChanged] user=${user.email}, uid=${user.uid}');
 
+    // Already resolved for this exact session — later auth events (token
+    // refresh, duplicated listeners) must not re-read the role and must never
+    // re-enter the retry loop.
+    if (_role != null && _auth.currentUser?.uid == user.uid) {
+      debugPrint(
+          '[AuthSessionProvider._handleAuthChanged] role already resolved '
+          '(${_role!.value}), skipping duplicate resolution');
+      _authRestoreTimer?.cancel();
+      _roleRetryTimer?.cancel();
+      _resolvePendingAuth();
+      return;
+    }
+
+    // A resolution for this uid is already in flight (constructor call +
+    // listener fired back-to-back). Let the in-flight resolution finish and
+    // settle the state; do NOT complete the pending completer here because the
+    // in-flight call still owns it.
+    if (_resolvingUid == user.uid) {
+      debugPrint(
+          '[AuthSessionProvider._handleAuthChanged] resolution already in '
+          'flight for uid=${user.uid}, skipping duplicate');
+      return;
+    }
+    _resolvingUid = user.uid;
+    // Only calls that actually proceed to resolution bump the version, so a
+    // skipped duplicate can never invalidate the in-flight resolution.
+    final authChangeVersion = ++_authChangeVersion;
+
+    // Make sure the platform Super Admin email is resolved (from the Master
+    // app_config doc) before any role guard runs against it.
+    await SuperAdminConfig.ensureLoaded(_firestore);
+
     _authRestoreTimer?.cancel();
     final locallyCachedRole = await _loadLocallyCachedRole(user.uid);
     // Only trust the local role cache for regular users. Admin/super-admin
@@ -267,7 +327,7 @@ class AuthSessionProvider extends ChangeNotifier {
     // company admin promoted to super admin) take effect on the next launch.
     final canUseCachedSession = _isCurrentAuthChange(authChangeVersion, user) &&
         locallyCachedRole != null &&
-        locallyCachedRole == AppUserRole.user;
+        locallyCachedRole == AppUserRole.employee;
     if (canUseCachedSession) {
       debugPrint(
           '[AuthSessionProvider._handleAuthChanged] using cached role: ${locallyCachedRole.value}');
@@ -276,6 +336,7 @@ class AuthSessionProvider extends ChangeNotifier {
       _isLoading = false;
       notifyListeners();
       _resolvePendingAuth();
+      _clearResolvingUid(user.uid);
       return;
     }
     _isLoading = true;
@@ -369,8 +430,16 @@ class AuthSessionProvider extends ChangeNotifier {
       _isLoading = false;
       notifyListeners();
       _scheduleRoleRetry(user);
+    } finally {
+      // Always release the in-flight guard so a later sign-in/sign-out cycle
+      // for the same uid is never blocked by a stale lock.
+      _clearResolvingUid(user.uid);
     }
     _resolvePendingAuth();
+  }
+
+  void _clearResolvingUid(String uid) {
+    if (_resolvingUid == uid) _resolvingUid = null;
   }
 
   bool _isCurrentAuthChange(int version, User user) {
@@ -391,13 +460,28 @@ class AuthSessionProvider extends ChangeNotifier {
     _authRestoreTimer = Timer(const Duration(seconds: 2), () async {
       final currentUser = _auth.currentUser;
       if (currentUser != null) {
+        _authRestoreAttempts = 0;
         unawaited(_handleAuthChanged(currentUser));
         return;
       }
 
       if (await _hasSavedSession()) {
-        _scheduleAuthRestoreCheck();
+        if (_authRestoreAttempts++ < 10) {
+          _scheduleAuthRestoreCheck();
+        } else {
+          // The saved session never restored (e.g. signed out on another
+          // device or the session expired). Forget it and land on the login
+          // screen instead of spinning forever.
+          debugPrint(
+              '[AuthSessionProvider] saved session did not restore after 10 attempts, clearing');
+          await _clearActiveSession(null);
+          _authRestoreAttempts = 0;
+          _role = null;
+          _isLoading = false;
+          notifyListeners();
+        }
       } else {
+        _authRestoreAttempts = 0;
         _role = null;
         _isLoading = false;
         notifyListeners();
@@ -406,9 +490,9 @@ class AuthSessionProvider extends ChangeNotifier {
   }
 
   Future<AppUserRole?> _loadCachedRole(String uid) async {
-    final locallyCachedRole = _guardRoleForEmail(
+    final locallyCachedRole = _guardSuperAdminActive(
       await _loadLocallyCachedRole(uid),
-      _auth.currentUser?.email,
+      uid,
     );
     if (locallyCachedRole != null) return locallyCachedRole;
 
@@ -417,9 +501,9 @@ class AuthSessionProvider extends ChangeNotifier {
           .collection('users')
           .doc(uid)
           .get(const GetOptions(source: Source.cache));
-      final role = _guardRoleForEmail(
+      final role = _guardSuperAdminActive(
         AppUserRoleX.fromValue(doc.data()?['role'] as String?),
-        _auth.currentUser?.email,
+        uid,
       );
       if (role != null) {
         unawaited(_cacheRole(uid, role));
@@ -440,15 +524,19 @@ class AuthSessionProvider extends ChangeNotifier {
             .get(const GetOptions(source: Source.cache));
         if (snap.docs.isEmpty) continue;
         final role = switch (collection) {
-          'staff' => AppUserRole.user,
-          'managers' => AppUserRole.user,
-          'admins' => AppUserRole.companyAdmin,
+          'staff' => AppUserRole.employee,
+          'managers' => AppUserRole.manager,
+          'admins' => AppUserRole.admin,
           _ => null,
         };
         if (role == null) continue;
         unawaited(_cacheRole(uid, role));
         return role;
       } catch (_) {}
+    }
+
+    if (SuperAdminConfig.matches(email)) {
+      return AppUserRole.superAdmin;
     }
 
     return null;
@@ -500,16 +588,17 @@ class AuthSessionProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// Super-admin is a platform role bound to [superAdminEmail]. Any other
-  /// account whose stored or cached role claims `super_admin` is downgraded so
-  /// it can never enter the Super Admin portal — regardless of what its
-  /// Firestore `users/{uid}` document says.
-  AppUserRole? _guardRoleForEmail(AppUserRole? role, String? email) {
+  /// Super-admin is a platform role authorized exclusively from the signed-in
+  /// account's own `users/{uid}.role` document. Per [SuperAdminConfig], the
+  /// configured Super Admin email only drives routing — never authorization —
+  /// so no email comparison is performed here. Any role that claims
+  /// `super_admin` for an account other than the currently signed-in one is
+  /// downgraded so it can never enter the Super Admin portal.
+  AppUserRole? _guardSuperAdminActive(AppUserRole? role, String? uid) {
     if (role == AppUserRole.superAdmin) {
-      final normalizedEmail = email?.trim().toLowerCase() ?? '';
-      if (normalizedEmail == superAdminEmail) return role;
+      if (uid != null && uid == _auth.currentUser?.uid) return role;
       debugPrint(
-          '[AuthSessionProvider] super_admin role denied for "$normalizedEmail"');
+          '[AuthSessionProvider] super_admin role denied for uid="$uid"');
       return null;
     }
     return role;
@@ -534,40 +623,28 @@ class AuthSessionProvider extends ChangeNotifier {
     debugPrint(
         '[AuthSessionProvider._loadRole] user doc exists=${doc.exists}, data=$data');
 
-    final storedRole = _guardRoleForEmail(
+    final storedRole = _guardSuperAdminActive(
       AppUserRoleX.fromValue(data?['role'] as String?),
-      user.email,
+      user.uid,
     );
     debugPrint(
         '[AuthSessionProvider._loadRole] storedRole from users doc: ${data?['role']} -> ${storedRole?.value}');
 
-    if (storedRole != null &&
-        storedRole != AppUserRole.companyAdmin &&
-        storedRole != AppUserRole.superAdmin) {
+    if (storedRole != null) {
+      // The signed-in user's `users/{uid}.role` document is the authoritative
+      // source of truth for the session role, including `super_admin`, which is
+      // pinned to the authenticated account by `_guardSuperAdminActive`. No
+      // extra directory lookup is required. (A previous version also demanded
+      // an `admins` directory match on top of the users doc, which made the
+      // Super Admin login fail whenever that lookup came back empty on the
+      // Master project.)
       debugPrint(
-          '[AuthSessionProvider._loadRole] non-admin role, returning: ${storedRole.value}');
+          '[AuthSessionProvider._loadRole] returning stored role: ${storedRole.value}');
       return storedRole;
     }
 
-    if (storedRole == AppUserRole.companyAdmin ||
-        storedRole == AppUserRole.superAdmin) {
-      final adminRole = storedRole!;
-      debugPrint(
-          '[AuthSessionProvider._loadRole] admin role (${adminRole.value}), checking authorization');
-      final normalizedEmail = user.email?.trim().toLowerCase() ?? '';
-      final isAuthorizedAdmin = await _isAuthorizedAdminDirectoryUser(user) ||
-          await _isSignedInAuthUserAdminFallback(normalizedEmail);
-      if (isAuthorizedAdmin) {
-        debugPrint(
-            '[AuthSessionProvider._loadRole] admin authorized, returning: ${adminRole.value}');
-        return adminRole;
-      }
-      debugPrint(
-          '[AuthSessionProvider._loadRole] admin NOT authorized via directory, falling through to infer');
-    } else {
-      debugPrint(
-          '[AuthSessionProvider._loadRole] no stored role, inferring from directory');
-    }
+    debugPrint(
+        '[AuthSessionProvider._loadRole] no stored role, inferring from directory');
 
     final inferredRole = await _inferRoleFromDirectory(
       email: user.email,
@@ -613,23 +690,27 @@ class AuthSessionProvider extends ChangeNotifier {
       return null;
     }
 
+    if (normalizedEmail.isNotEmpty && SuperAdminConfig.matches(normalizedEmail)) {
+      return AppUserRole.superAdmin;
+    }
+
     if (normalizedEmail.isNotEmpty) {
       final exactManager = await _firestore
           .collection('managers')
           .where('email', isEqualTo: normalizedEmail)
           .limit(1)
           .get();
-      if (exactManager.docs.isNotEmpty) return AppUserRole.user;
+      if (exactManager.docs.isNotEmpty) return AppUserRole.manager;
 
       final exactStaff = await _firestore
           .collection('staff')
           .where('email', isEqualTo: normalizedEmail)
           .limit(1)
           .get();
-      if (exactStaff.docs.isNotEmpty) return AppUserRole.user;
+      if (exactStaff.docs.isNotEmpty) return AppUserRole.employee;
 
       if (await _isAuthorizedAdminDirectoryEmail(normalizedEmail)) {
-        return AppUserRole.companyAdmin;
+        return AppUserRole.admin;
       }
     }
 
@@ -639,14 +720,14 @@ class AuthSessionProvider extends ChangeNotifier {
           .where('phone', isEqualTo: normalizedPhone)
           .limit(1)
           .get();
-      if (exactManager.docs.isNotEmpty) return AppUserRole.user;
+      if (exactManager.docs.isNotEmpty) return AppUserRole.manager;
 
       final exactStaff = await _firestore
           .collection('staff')
           .where('phone', isEqualTo: normalizedPhone)
           .limit(1)
           .get();
-      if (exactStaff.docs.isNotEmpty) return AppUserRole.user;
+      if (exactStaff.docs.isNotEmpty) return AppUserRole.employee;
     }
 
     final managerSnapshot =
@@ -656,10 +737,10 @@ class AuthSessionProvider extends ChangeNotifier {
           (doc.data()['email'] as String? ?? '').trim().toLowerCase();
       final docPhone = (doc.data()['phone'] as String? ?? '').trim();
       if (normalizedEmail.isNotEmpty && docEmail == normalizedEmail) {
-        return AppUserRole.user;
+        return AppUserRole.manager;
       }
       if (normalizedPhone.isNotEmpty && docPhone == normalizedPhone) {
-        return AppUserRole.user;
+        return AppUserRole.manager;
       }
     }
 
@@ -669,16 +750,16 @@ class AuthSessionProvider extends ChangeNotifier {
           (doc.data()['email'] as String? ?? '').trim().toLowerCase();
       final docPhone = (doc.data()['phone'] as String? ?? '').trim();
       if (normalizedEmail.isNotEmpty && docEmail == normalizedEmail) {
-        return AppUserRole.user;
+        return AppUserRole.employee;
       }
       if (normalizedPhone.isNotEmpty && docPhone == normalizedPhone) {
-        return AppUserRole.user;
+        return AppUserRole.employee;
       }
     }
 
     if (allowAuthenticatedAdminFallback &&
         await _isSignedInAuthUserAdminFallback(normalizedEmail)) {
-      return AppUserRole.companyAdmin;
+      return AppUserRole.admin;
     }
 
     return null;
@@ -705,7 +786,7 @@ class AuthSessionProvider extends ChangeNotifier {
       final staffService = StaffService(context: _context);
       String? staffId;
       String? staffCompanyId;
-      if (resolvedRole == AppUserRole.user) {
+      if (resolvedRole == AppUserRole.employee) {
         final staffRecord = await staffService.getStaffByEmail(trimmedEmail);
         if (staffRecord != null && !staffRecord.isActive) {
           _setLoading(false);
@@ -752,11 +833,12 @@ class AuthSessionProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> signIn({
+Future<void> signIn({
     required String email,
     required String password,
   }) async {
     debugPrint('[AuthSessionProvider.signIn] email=$email');
+
     _setLoading(true);
     _errorMessage = null;
 
@@ -794,6 +876,11 @@ class AuthSessionProvider extends ChangeNotifier {
         await _ensureMasterContext();
       }
 
+      // Set the completer BEFORE authenticating so a synchronous auth-stream
+      // event (which completes it inside _handleAuthChanged) can never be lost.
+      _pendingAuthCompleter = Completer<void>();
+      final pendingAuth = _pendingAuthCompleter;
+
       debugPrint(
           '[AuthSessionProvider.signIn] calling signInWithEmailAndPassword');
       final credential = await _auth.signInWithEmailAndPassword(
@@ -808,15 +895,16 @@ class AuthSessionProvider extends ChangeNotifier {
 
       debugPrint(
           '[AuthSessionProvider.signIn] Firebase auth success, waiting for _handleAuthChanged');
-      _pendingAuthCompleter = Completer<void>();
-      await _pendingAuthCompleter!.future.timeout(
-        const Duration(seconds: 30),
-        onTimeout: () {
-          debugPrint(
-              '[AuthSessionProvider.signIn] _pendingAuthCompleter TIMED OUT after 30s');
-          throw Exception('Login timed out while loading your workspace.');
-        },
-      );
+      if (pendingAuth != null && !pendingAuth.isCompleted) {
+        await pendingAuth.future.timeout(
+          const Duration(seconds: 30),
+          onTimeout: () {
+            debugPrint(
+                '[AuthSessionProvider.signIn] _pendingAuthCompleter TIMED OUT after 30s');
+            throw Exception('Login timed out while loading your workspace.');
+          },
+        );
+      }
 
       debugPrint(
           '[AuthSessionProvider.signIn] _handleAuthChanged completed, role=${_role?.value}');
@@ -846,6 +934,9 @@ class AuthSessionProvider extends ChangeNotifier {
       _pendingAuthCompleter = null;
       _setLoading(false);
       rethrow;
+    } finally {
+      _isLoading = false;
+      notifyListeners();
     }
   }
 
@@ -882,15 +973,21 @@ class AuthSessionProvider extends ChangeNotifier {
 
       debugPrint(
           '[AuthSessionProvider.signInWithGoogle] auth success, waiting for _handleAuthChanged');
+      // Set the completer BEFORE authenticating (see signIn for the rationale).
+      // If the role already resolved (the auth event fired during the popup),
+      // there is nothing left to wait for.
       _pendingAuthCompleter = Completer<void>();
-      await _pendingAuthCompleter!.future.timeout(
-        const Duration(seconds: 30),
-        onTimeout: () {
-          debugPrint(
-              '[AuthSessionProvider.signInWithGoogle] _pendingAuthCompleter TIMED OUT after 30s');
-          throw Exception('Login timed out while loading your workspace.');
-        },
-      );
+      final pendingAuth = _pendingAuthCompleter;
+      if (_role == null && pendingAuth != null && !pendingAuth.isCompleted) {
+        await pendingAuth.future.timeout(
+          const Duration(seconds: 30),
+          onTimeout: () {
+            debugPrint(
+                '[AuthSessionProvider.signInWithGoogle] _pendingAuthCompleter TIMED OUT after 30s');
+            throw Exception('Login timed out while loading your workspace.');
+          },
+        );
+      }
 
       debugPrint(
           '[AuthSessionProvider.signInWithGoogle] _handleAuthChanged completed, role=${_role?.value}');
@@ -1030,39 +1127,6 @@ class AuthSessionProvider extends ChangeNotifier {
     return false;
   }
 
-  Future<bool> _isAuthorizedAdminDirectoryUser(User user) async {
-    debugPrint(
-        '[AuthSessionProvider._isAuthorizedAdminDirectoryUser] uid=${user.uid}');
-    try {
-      final uidDoc = await _firestore.collection('admins').doc(user.uid).get();
-      debugPrint(
-          '[AuthSessionProvider._isAuthorizedAdminDirectoryUser] admins/{uid} exists=${uidDoc.exists}');
-      if (uidDoc.exists && _isActiveAdminDirectoryData(uidDoc.data())) {
-        return true;
-      }
-    } on FirebaseException catch (e) {
-      if (e.code != 'permission-denied') rethrow;
-    }
-
-    try {
-      final userDoc = await _firestore.collection('users').doc(user.uid).get();
-      debugPrint(
-          '[AuthSessionProvider._isAuthorizedAdminDirectoryUser] users/{uid} exists=${userDoc.exists}');
-      if (userDoc.exists &&
-          _isActiveAdminDirectoryData(userDoc.data()) &&
-          _recordMatchesEmail(userDoc.data(), user.email)) {
-        return true;
-      }
-    } on FirebaseException catch (e) {
-      if (e.code != 'permission-denied') rethrow;
-    }
-
-    final result = await _isAuthorizedAdminDirectoryEmail(user.email);
-    debugPrint(
-        '[AuthSessionProvider._isAuthorizedAdminDirectoryUser] email check result: $result');
-    return result;
-  }
-
   Future<bool> _isSignedInAuthUserAdminFallback(String normalizedEmail) async {
     debugPrint(
         '[AuthSessionProvider._isSignedInAuthUserAdminFallback] email=$normalizedEmail');
@@ -1092,7 +1156,7 @@ class AuthSessionProvider extends ChangeNotifier {
             normalizedEmail.split('@').first.replaceAll('.', ' '),
         'email': normalizedEmail,
         'authUid': currentUser.uid,
-        'role': AppUserRole.companyAdmin.value,
+        'role': AppUserRole.admin.value,
         'status': 'active',
         'isActive': true,
         'photoUrl': currentUser.photoURL,
@@ -1200,14 +1264,6 @@ class AuthSessionProvider extends ChangeNotifier {
             role == 'companyadmin') &&
         active &&
         status != 'inactive';
-  }
-
-  bool _recordMatchesEmail(Map<String, dynamic>? data, String? email) {
-    final normalizedEmail = email?.trim().toLowerCase() ?? '';
-    if (normalizedEmail.isEmpty) return true;
-    if (data == null) return true;
-    return _adminEmailCandidates(data).isEmpty ||
-        _recordEmailMatches(data, normalizedEmail);
   }
 
   bool _recordEmailMatches(Map<String, dynamic>? data, String normalizedEmail) {

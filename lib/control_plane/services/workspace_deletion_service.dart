@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../firebase/firebase_context.dart';
@@ -145,23 +146,46 @@ class WorkspaceDeletionService {
     required String? adminUid,
     required List<String> warnings,
   }) async {
-    final app = await _firebaseManager.initializeTenantApp(
-      workspaceId: workspace.workspaceId,
-      options: workspace.firebaseConfig.toFirebaseOptions(),
-    );
-    final context = FirebaseContext.fromApp(app);
+    FirebaseApp? app;
+    final tenantProjectId = workspace.firebaseConfig.projectId;
+    final sharesDefaultProject =
+        tenantProjectId.isNotEmpty &&
+            tenantProjectId ==
+                FirebaseManager.instance.defaultApp.options.projectId;
+
+    FirebaseContext context;
     try {
+      if (sharesDefaultProject) {
+        // Reuse the authenticated default app context so every delete operation
+        // carries the Super Admin's token and satisfies Firestore rules.
+        // A fresh secondary app is unauthenticated and all writes would fail.
+        context = FirebaseContext();
+      } else {
+        app = await FirebaseManager.instance.initializeTenantApp(
+          workspaceId: workspace.workspaceId,
+          options: workspace.firebaseConfig.toFirebaseOptions(),
+        );
+        context = FirebaseContext.fromApp(app);
+      }
+
       await _purgeTenantFirestore(
         context,
         companyId: companyId,
         adminUid: adminUid,
         warnings: warnings,
       );
+    } catch (e) {
+      // warnings are already collected inside _purgeTenantFirestore
     } finally {
-      try {
-        await _firebaseManager.disposeTenant(workspace.workspaceId);
-      } catch (e) {
-        warnings.add('Could not dispose the tenant app: $e');
+      // BEST-EFFORT: Always attempt to dispose the tenant app so it is not
+      // left cached after deletion. disposeTenant is idempotent — if the app
+      // was already removed from the cache, the call is a no-op.
+      if (app != null && !sharesDefaultProject) {
+        try {
+          await _firebaseManager.disposeTenant(workspace.workspaceId);
+        } catch (_) {
+          // disposal failure is best-effort; do not block workspace deletion
+        }
       }
     }
   }
@@ -227,6 +251,20 @@ class WorkspaceDeletionService {
         warnings.add('Could not purge "$name": $e');
       }
     }
+
+    // REQUIRED BACKEND MECHANISM FOR FIREBASE AUTH CLEANUP:
+    // Firebase Authentication users cannot be securely deleted from client-side 
+    // code without their current password or highly privileged Admin SDK credentials.
+    // If the Firebase Auth user must be deleted so the email can be reused, 
+    // the system requires a backend Cloud Function (e.g., triggered by workspace 
+    // deletion or a dedicated HTTPS callable) that uses the Admin SDK:
+    // `admin.auth().deleteUser(adminUid)`.
+    if (adminUid != null && adminUid.isNotEmpty) {
+      warnings.add(
+        'Auth User not deleted: Backend Cloud Function required to securely delete '
+        'Firebase Auth user ($adminUid).',
+      );
+    }
   }
 
   /// Deletes every document of [collection] in chunks of 400 (the client SDK
@@ -236,11 +274,13 @@ class WorkspaceDeletionService {
     while (true) {
       final snap = await ref.limit(400).get();
       if (snap.docs.isEmpty) return;
-      final batch = db.batch();
       for (final doc in snap.docs) {
-        batch.delete(doc.reference);
+        if (['managers', 'users', 'admins', 'staff'].contains(name)) {
+          await _deleteSubcollection(doc.reference.collection('notifications'));
+          await _deleteSubcollection(doc.reference.collection('roles'));
+        }
+        await doc.reference.delete();
       }
-      await batch.commit();
       if (snap.docs.length < 400) return;
     }
   }
@@ -261,11 +301,24 @@ class WorkspaceDeletionService {
           .limit(400)
           .get();
       if (snap.docs.isEmpty) return;
-      final batch = db.batch();
       for (final doc in snap.docs) {
-        batch.delete(doc.reference);
+        if (['users', 'managers', 'admins', 'staff'].contains(collection)) {
+          await _deleteSubcollection(doc.reference.collection('notifications'));
+          await _deleteSubcollection(doc.reference.collection('roles'));
+        }
+        await doc.reference.delete();
       }
-      await batch.commit();
+      if (snap.docs.length < 400) return;
+    }
+  }
+
+  Future<void> _deleteSubcollection(CollectionReference ref) async {
+    while (true) {
+      final snap = await ref.limit(400).get();
+      if (snap.docs.isEmpty) return;
+      for (final doc in snap.docs) {
+        await doc.reference.delete();
+      }
       if (snap.docs.length < 400) return;
     }
   }
@@ -302,10 +355,10 @@ class WorkspaceDeletionService {
           await _allocations.getByProjectId(workspace.firebaseProjectId);
       if (allocation != null &&
           allocation.allocatedWorkspaceId == workspace.workspaceId) {
-        await _allocations.decommission(workspace.firebaseProjectId);
+        await _allocations.delete(workspace.firebaseProjectId);
       }
     } catch (e) {
-      warnings.add('Could not decommission the project allocation: $e');
+      warnings.add('Could not delete the project allocation: $e');
     }
 
     // Provisioning audit logs referencing this workspace.

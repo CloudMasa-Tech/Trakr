@@ -3,10 +3,18 @@ import 'package:go_router/go_router.dart';
 import '../providers/auth_session_provider.dart';
 import '../screens/auth/auth_gate_screen.dart';
 import '../screens/auth/workspace_dashboard_gate.dart';
+import '../screens/super_admin/super_admin_portal_screen.dart';
+import '../screens/super_admin/workspace_details_screen.dart';
 
 /// Route pattern for a tenant's web dashboard, e.g.
 /// `/workspace/cloudmasa-innovation-lab/dashboard`.
 const String workspaceDashboardRoute = '/workspace/:workspaceSlug/dashboard';
+
+/// Route pattern for the Super Admin portal.
+const String superAdminRoute = '/super-admin';
+
+/// Route pattern for workspace details in Super Admin portal.
+const String superAdminWorkspaceDetailsRoute = '/super-admin/workspace/:workspaceId/details';
 
 /// Builds the app-wide [GoRouter].
 ///
@@ -69,12 +77,22 @@ GoRouter buildAppRouter(AuthSessionProvider auth) {
           workspaceSlug: state.pathParameters['workspaceSlug'] ?? '',
         ),
       ),
+      GoRoute(
+        path: superAdminRoute,
+        builder: (context, state) => SuperAdminPortalScreen(
+          onLogout: () async => context.go('/'),
+        ),
+      ),
+      GoRoute(
+        path: superAdminWorkspaceDetailsRoute,
+        builder: (context, state) => WorkspaceDetailsScreen(
+          workspaceId: state.pathParameters['workspaceId'] ?? '',
+        ),
+      ),
     ],
   );
 }
 
-/// Extracts the `:workspaceSlug` segment from a `/workspace/...` path, or
-/// `null` when the path is not shaped like a workspace route.
 String? _slugFromPath(String path) {
   final segments = path.split('/');
   if (segments.length >= 3 && segments[1] == 'workspace') {
