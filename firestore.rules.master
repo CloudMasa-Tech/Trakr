@@ -1,0 +1,178 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ================================================================
+    // MASTER / CONTROL-PLANE FIRESTORE RULES
+    // ================================================================
+    // DEPLOY TARGET: Master/control-plane project only (e.g. trakradminsetup-28437).
+    // Run: firebase deploy --only firestore:rules --project trakradminsetup-28437
+    // DO NOT deploy this file to tenant projects — use firestore.rules (tenant).
+    // ================================================================
+
+    function signedIn() { return request.auth != null; }
+
+    // Super Admin = platform owner
+    // Check custom claim first (preferred, no Firestore read), then fall back to email match
+    function isSuperAdmin() {
+      return signedIn() &&
+          (
+            // Primary: custom claim set via Admin SDK (no Firestore read, no circular dependency)
+            (request.auth.token.super_admin == true)
+            ||
+            // Fallback: email matches primaryAdminEmail in app_config/admin_access
+            // (requires Firestore read, but works for initial setup before custom claim is set)
+            (
+              'email' in request.auth.token &&
+              request.auth.token.email != null &&
+              exists(/databases/$(database)/documents/app_config/admin_access) &&
+              get(/databases/$(database)/documents/app_config/admin_access).data.primaryAdminEmail is string &&
+              get(/databases/$(database)/documents/app_config/admin_access).data.primaryAdminEmail.lower() == request.auth.token.email.lower()
+            )
+          );
+    }
+
+    // Company Admin = tenant admin (has companyId in their users doc)
+    function userCompanyId() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid))
+          ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.companyId
+          : null;
+    }
+    function inCompany(companyId) {
+      return signedIn() && companyId != null && companyId == userCompanyId();
+    }
+
+    // ================================================================
+    // WORKSPACES — Master registry of all tenant workspaces
+    // ================================================================
+    // Read: Super Admin, Company Admin of that workspace, OR unauthenticated (for login resolution)
+    // Write: Super Admin only
+    match /workspaces/{workspaceId} {
+      allow read: if isSuperAdmin() || inCompany(workspaceId) || !signedIn();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // ================================================================
+    // FIREBASE PROJECT ALLOCATIONS — Pre-created project pool
+    // ================================================================
+    match /firebase_project_allocations/{projectId} {
+      allow read: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // ================================================================
+    // TENANT USERS — Login identity index (email -> workspaceId)
+    // ================================================================
+    // Read: Super Admin, OR unauthenticated (for login resolution before sign-in)
+    // Write: Super Admin only
+    match /tenant_users/{email} {
+      allow read: if isSuperAdmin() || !signedIn();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // ================================================================
+    // PROVISION LOGS — Audit trail for workspace onboarding
+    // ================================================================
+    match /workspace_provision_logs/{logId} {
+      allow read: if isSuperAdmin();
+      allow create: if isSuperAdmin();
+      allow update: if isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+
+    // ================================================================
+    // PROJECT ALLOCATIONS — maps Firebase project IDs to workspaces
+    // ================================================================
+    // NOTE: The CF deleteWorkspace uses collection name "project_allocations".
+    match /project_allocations/{projectId} {
+      allow read: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+    // Legacy name used by some code paths
+    match /firebase_project_allocations/{projectId} {
+      allow read: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // ================================================================
+    // DELETED PROJECTS — 30-day reuse block after workspace deletion
+    // ================================================================
+    match /deleted_projects/{projectId} {
+      allow read: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // ================================================================
+    // AUDIT LOGS — platform-wide audit trail
+    // ================================================================
+    match /audit_logs/{logId} {
+      allow read: if isSuperAdmin();
+      allow create: if isSuperAdmin();
+      allow update, delete: if false;
+    }
+
+    // ================================================================
+    // PLANS — Billing plan catalog (platform-wide)
+    // ================================================================
+    match /plans/{planId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // ================================================================
+    // SUBSCRIPTIONS — Billing state (embed in workspaces; collection deprecated)
+    // ================================================================
+    match /subscriptions/{subscriptionId} {
+      allow read: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    // ================================================================
+    // APP CONFIG — Master project bootstrap (admin_access, etc.)
+    // ================================================================
+    match /app_config/admin_access {
+      allow read: if signedIn();
+      allow create: if isSuperAdmin();
+      allow update: if isSuperAdmin();
+      allow delete: if isSuperAdmin();
+    }
+    match /app_config/{docId} {
+      allow read: if signedIn();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
+    // ================================================================
+    // USERS — Master project user records (for Super Admin and tenant admins)
+    // ================================================================
+    // The Master project also has a `users` collection for platform accounts.
+    // Super Admin has full access; Company Admins can read their own doc.
+    match /users/{userId} {
+      allow read: if isSuperAdmin() || (signedIn() && request.auth.uid == userId);
+      allow create: if isSuperAdmin();
+      allow update: if isSuperAdmin() || (signedIn() && request.auth.uid == userId);
+      allow delete: if isSuperAdmin();
+    }
+
+    // ================================================================
+    // CONTROL-PLANE SUPER ADMIN COLLECTIONS
+    // ================================================================
+    // platformStats and activity_logs are control-plane collections on the
+    // Master project (not tenant projects). The Super Admin has unrestricted
+    // read/write access to these.
+    match /platformStats/{docId} {
+      allow read: if isSuperAdmin();
+      allow write: if isSuperAdmin();
+    }
+    match /activity_logs/{docId} {
+      allow read: if isSuperAdmin();
+      allow write: if isSuperAdmin();
+    }
+
+    // ── Catch‑all deny ────────────────────────────────────────────────
+    // Anything not explicitly matched above (including control-plane/platform
+    // collections such as plans, subscriptions, billing, audit logs, etc.) is
+    // denied for everyone.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

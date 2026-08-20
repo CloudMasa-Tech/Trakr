@@ -945,6 +945,7 @@ class _FirebaseConfigUploadFieldState extends State<FirebaseConfigUploadField> {
     bool monospace = false,
     bool Function()? obscure,
     VoidCallback? onToggleObscure,
+    Widget? suffixIcon,
   }) {
     final errorText = _fieldErrors[errorKey];
     final isObscure = obscure?.call() ?? false;
@@ -985,19 +986,20 @@ class _FirebaseConfigUploadFieldState extends State<FirebaseConfigUploadField> {
           decoration: _inputDecoration(
             hint,
             errorText: errorText,
-            suffixIcon: onToggleObscure == null
-                ? null
-                : IconButton(
-                    onPressed: _busy ? null : onToggleObscure,
-                    icon: Icon(
-                      isObscure
-                          ? Icons.visibility_off_rounded
-                          : Icons.visibility_rounded,
-                      color: kCoSubtle,
-                      size: 17,
-                    ),
-                    tooltip: isObscure ? 'Show value' : 'Hide value',
-                  ),
+            suffixIcon: suffixIcon ??
+                (onToggleObscure == null
+                    ? null
+                    : IconButton(
+                        onPressed: _busy ? null : onToggleObscure,
+                        icon: Icon(
+                          isObscure
+                              ? Icons.visibility_off_rounded
+                              : Icons.visibility_rounded,
+                          color: kCoSubtle,
+                          size: 17,
+                        ),
+                        tooltip: isObscure ? 'Show value' : 'Hide value',
+                      )),
           ),
         ),
         if (errorText != null)

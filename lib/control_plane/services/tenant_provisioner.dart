@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../firebase/firebase_context.dart';
@@ -126,6 +127,9 @@ class DirectTenantProvisioner implements TenantProvisioner {
         'TenantProvisioner.provision: step "$step" starting '
         '(workspace=$workspaceId)…',
       );
+
+      // Mark workspace as configuring so the UI can show progress
+      await _updateWorkspaceOnboardingStatus(workspaceId, 'configuring');
       final tenantProjectId = workspace.firebaseConfig.projectId;
 
       // ── Tenant isolation guard ────────────────────────────────────────
@@ -180,6 +184,67 @@ class DirectTenantProvisioner implements TenantProvisioner {
         );
       }
 
+      // ── Create tenant project if it doesn't exist ───────────────────────
+      // The project is created under folder 818058604638 (tenant-projects)
+      // which automatically grants the required IAM roles via folder-level inheritance.
+      step = 'create tenant project if needed';
+      debugPrint(
+        'TenantProvisioner.provision: step "$step" starting…',
+      );
+      final gcpResult = await _createTenantProjectIfNeeded(
+        projectId: tenantProjectId,
+        companyName: workspace.companyName,
+        // billingAccount can be passed if needed, e.g., 'billingAccounts/XXXXXX'
+      );
+      debugPrint('TenantProvisioner.provision: step "$step" succeeded, GCP display name: ${gcpResult.displayName}, projectNumber: ${gcpResult.projectNumber}');
+      
+      // If the project ID was regenerated due to collision, update the workspace
+      // config so subsequent steps use the correct project ID.
+      String actualProjectId = tenantProjectId;
+      if (gcpResult.projectIdChanged) {
+        debugPrint(
+          'TenantProvisioner.provision: project ID changed from '
+          '"$tenantProjectId" to "${gcpResult.finalProjectId}" due to collision. '
+          'Updating workspace config.',
+        );
+        actualProjectId = gcpResult.finalProjectId;
+        await _updateWorkspaceProjectId(workspace.workspaceId, actualProjectId);
+        // Also update the local config object so subsequent steps use the new ID
+        final updatedConfig = WorkspaceFirebaseConfig(
+          apiKey: workspace.firebaseConfig.apiKey,
+          appId: workspace.firebaseConfig.appId,
+          projectId: actualProjectId,
+          messagingSenderId: workspace.firebaseConfig.messagingSenderId,
+          storageBucket: workspace.firebaseConfig.storageBucket,
+          authDomain: workspace.firebaseConfig.authDomain,
+          measurementId: workspace.firebaseConfig.measurementId,
+          iosBundleId: workspace.firebaseConfig.iosBundleId,
+          iosClientId: workspace.firebaseConfig.iosClientId,
+          androidClientId: workspace.firebaseConfig.androidClientId,
+          configMethod: workspace.firebaseConfig.configMethod,
+          npmPackage: workspace.firebaseConfig.npmPackage,
+          sdkVersion: workspace.firebaseConfig.sdkVersion,
+          cdnUrl: workspace.firebaseConfig.cdnUrl,
+        );
+        workspace = workspace.copyWith(
+          firebaseConfig: updatedConfig,
+          firebaseProjectId: actualProjectId,
+        );
+      }
+      
+      // Store the derived GCP display name in the workspace registry
+      await _updateWorkspaceGcpDisplayName(workspace.workspaceId, gcpResult.displayName);
+
+      // Persist granular provisioning flags from the CF response so the UI
+      // can show exactly which steps have completed.
+      await _updateWorkspaceProvisioningFlags(
+        workspace.workspaceId,
+        firebaseEnabled: gcpResult.firebaseEnabled,
+        apisEnabled: gcpResult.apisEnabled,
+        firestoreDbCreated: gcpResult.firestoreDbCreated,
+        authEnabled: gcpResult.authEnabled,
+      );
+
       // ── Live connectivity validation ────────────────────────────────
       // Proves the apiKey + project are valid and reachable before investing
       // effort into full provisioning. Any auth response (even "no account for
@@ -205,6 +270,16 @@ class DirectTenantProvisioner implements TenantProvisioner {
           '$e',
         );
       }
+
+      // Mark the workspace as GCP project verified with the project number
+      // ONLY after connectivity validation confirms the project is live and
+      // reachable. Setting this flag too early (e.g. right after GCP project
+      // creation) can leave the workspace stuck in a "verified" state when
+      // Firebase enablement or API activation actually failed.
+      await _updateWorkspaceGcpVerified(
+        workspace.workspaceId,
+        gcpResult.projectNumber,
+      );
 
       try {
         // 1. Initialize the tenant app. This must happen BEFORE
@@ -248,6 +323,15 @@ class DirectTenantProvisioner implements TenantProvisioner {
           'TenantProvisioner.provision: step "verify tenant credentials" '
           'succeeded (tenant project=${appOptions.projectId}).',
         );
+
+        // Deploy Firestore rules and indexes to the tenant project automatically
+        step = 'deploy tenant Firestore rules and indexes';
+        debugPrint('TenantProvisioner.provision: step "$step" starting…');
+        await _deployTenantRulesAndIndexes(
+          tenantProjectId: appOptions.projectId,
+        );
+        await _updateWorkspaceRulesDeployed(workspace.workspaceId);
+        debugPrint('TenantProvisioner.provision: step "$step" succeeded.');
 
         step = 'allocate company id';
         debugPrint('TenantProvisioner.provision: step "$step" starting…');
@@ -558,6 +642,7 @@ class DirectTenantProvisioner implements TenantProvisioner {
 
 _active.remove(workspace.workspaceId);
         _firebaseManager.clearProvisioning(workspaceId);
+        await _updateWorkspaceOnboardingStatus(workspaceId, 'ready');
         return TenantProvisioningResult(
           companyId: companyId,
           adminUid: adminUid,
@@ -569,6 +654,12 @@ _active.remove(workspace.workspaceId);
           'for workspace "$workspaceId" - $e\n$st',
         );
         _firebaseManager.clearProvisioning(workspaceId);
+        await _updateWorkspaceOnboardingStatus(
+          workspaceId,
+          'failed',
+          failedStep: step,
+          lastError: e.toString(),
+        );
         await _teardownTenant(workspaceId);
         rethrow;
       }
@@ -758,6 +849,249 @@ _active.remove(workspace.workspaceId);
         );
       }
       rethrow;
+    }
+  }
+
+  /// Deploys the TRAKR Firestore rules and indexes to the tenant project
+  /// by calling the Vercel backend API, which uses the Firebase Admin SDK
+  /// with proper OAuth2 credentials to deploy via the Security Rules REST API.
+  /// Deploys the TRAKR Firestore rules and indexes to the tenant project
+  /// by calling the Cloud Function `deployTenantRules` via the Firebase Functions SDK.
+  /// This is called automatically during provisioning after the tenant project
+  /// is verified but before any admin accounts or data are created.
+  Future<void> _deployTenantRulesAndIndexes({
+    required String tenantProjectId,
+  }) async {
+    debugPrint(
+      'TenantProvisioner._deployTenantRulesAndIndexes: deploying to $tenantProjectId',
+    );
+
+    try {
+      debugPrint('Calling Cloud Function deployTenantRules for $tenantProjectId');
+
+      final functions = FirebaseFunctions.instance;
+      final result = await functions.httpsCallable('deployTenantRules').call({
+        'tenantProjectId': tenantProjectId,
+      }).timeout(const Duration(seconds: 300));
+
+      final data = result.data as Map<String, dynamic>;
+      debugPrint('Cloud Function deployTenantRules succeeded: $data');
+
+      // Verify the response indicates success
+      if (data['success'] != true) {
+        throw StateError('Cloud Function returned error: ${data['error'] ?? 'unknown error'}');
+      }
+
+      debugPrint('TenantProvisioner._deployTenantRulesAndIndexes: completed successfully');
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint('Cloud Function deployTenantRules failed: ${e.code} - ${e.message}');
+      throw StateError(
+        'Failed to deploy tenant rules via Cloud Function: ${e.message}. '
+        'Ensure the Cloud Functions are deployed and the master service account has '
+        'Firebase Rules Admin and Datastore Index Admin roles on the tenant project. '
+        'Details: ${e.details}',
+      );
+    } catch (e) {
+      debugPrint('TenantProvisioner._deployTenantRulesAndIndexes: error - $e');
+      rethrow;
+    }
+  }
+
+  /// Creates a new GCP/Firebase project under the configured folder (818058604638)
+  /// by calling the Cloud Function `createTenantProject` via the Firebase Functions SDK.
+  /// This is called during provisioning if the project doesn't exist yet.
+  /// The project will be created under folder 818058604638 (tenant-projects),
+  // and will automatically inherit the required IAM roles via folder-level inheritance.
+  /// Returns a tuple of (displayName, projectNumber, finalProjectId, projectIdChanged)
+  Future<({String displayName, String projectNumber, String finalProjectId, bool projectIdChanged, bool firebaseEnabled, bool apisEnabled, bool firestoreDbCreated, bool authEnabled, bool alreadyExisted})> _createTenantProjectIfNeeded({
+    required String projectId,
+    required String companyName,
+    String? billingAccount,
+  }) async {
+    debugPrint(
+      'TenantProvisioner._createTenantProjectIfNeeded: creating project $projectId',
+    );
+
+    try {
+      debugPrint('Calling Cloud Function createTenantProject for $projectId');
+
+      final functions = FirebaseFunctions.instance;
+      final result = await functions.httpsCallable('createTenantProject').call({
+        'projectId': projectId,
+        'companyName': companyName,
+        if (billingAccount != null) 'billingAccount': billingAccount,
+      }).timeout(const Duration(seconds: 300));
+
+      final data = result.data as Map<String, dynamic>;
+      debugPrint('Cloud Function createTenantProject succeeded: $data');
+
+      if (data['success'] != true) {
+        throw StateError('Cloud Function returned error: ${data['error'] ?? 'unknown error'}');
+      }
+
+      final displayName = data['displayName'] as String?;
+      final projectNumber = data['projectNumber'] as String?;
+      final finalProjectId = data['projectId'] as String? ?? projectId;
+      final projectIdChanged = data['projectIdChanged'] as bool? ?? false;
+      final alreadyExisted = data['alreadyExisted'] as bool? ?? false;
+      final firebaseEnabled = data['firebaseEnabled'] as bool? ?? false;
+      final apisEnabled = data['apisEnabled'] as bool? ?? false;
+      final firestoreDbCreated = data['firestoreDbCreated'] as bool? ?? false;
+      final authEnabled = data['authEnabled'] as bool? ?? false;
+      debugPrint(
+        'TenantProvisioner._createTenantProjectIfNeeded: completed successfully, '
+        'displayName: $displayName, projectNumber: $projectNumber, '
+        'finalProjectId: $finalProjectId, projectIdChanged: $projectIdChanged, '
+        'alreadyExisted: $alreadyExisted, firebaseEnabled: $firebaseEnabled, '
+        'apisEnabled: $apisEnabled, firestoreDbCreated: $firestoreDbCreated, '
+        'authEnabled: $authEnabled',
+      );
+
+      return (
+        displayName: displayName ?? companyName,
+        projectNumber: projectNumber ?? '',
+        finalProjectId: finalProjectId,
+        projectIdChanged: projectIdChanged,
+        firebaseEnabled: firebaseEnabled,
+        apisEnabled: apisEnabled,
+        firestoreDbCreated: firestoreDbCreated,
+        authEnabled: authEnabled,
+        alreadyExisted: alreadyExisted,
+      );
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint('Cloud Function createTenantProject failed: ${e.code} - ${e.message}');
+      throw StateError(
+        'Failed to create tenant project via Cloud Function: ${e.message}. '
+        'Ensure the Cloud Functions are deployed and the master service account has '
+        'Project Creator role on folder 818058604638. '
+        'Details: ${e.details}',
+      );
+    } catch (e) {
+      debugPrint('TenantProvisioner._createTenantProjectIfNeeded: error - $e');
+      rethrow;
+    }
+  }
+
+  /// Updates the workspace with the derived GCP project display name.
+  Future<void> _updateWorkspaceGcpDisplayName(
+    String workspaceId,
+    String gcpProjectDisplayName,
+  ) async {
+    try {
+      final firestore = FirebaseFirestore.instanceFor(app: _firebaseManager.defaultApp);
+      await firestore
+          .collection('workspaces')
+          .doc(workspaceId)
+          .update({'gcpProjectDisplayName': gcpProjectDisplayName});
+      debugPrint(
+        'TenantProvisioner: Updated workspace $workspaceId with GCP display name: $gcpProjectDisplayName',
+      );
+    } catch (e) {
+      debugPrint('TenantProvisioner: Failed to update GCP display name: $e');
+      // Non-fatal - don't block provisioning
+    }
+  }
+
+  /// Updates the workspace's firebaseConfig.projectId when the Cloud Function
+  /// regenerated the project ID due to a collision.
+  Future<void> _updateWorkspaceProjectId(
+    String workspaceId,
+    String newProjectId,
+  ) async {
+    try {
+      final firestore = FirebaseFirestore.instanceFor(app: _firebaseManager.defaultApp);
+      await firestore.collection('workspaces').doc(workspaceId).update({
+        'firebaseConfig.projectId': newProjectId,
+      });
+      debugPrint(
+        'TenantProvisioner: Updated workspace $workspaceId with new project ID: $newProjectId',
+      );
+    } catch (e) {
+      debugPrint('TenantProvisioner: Failed to update project ID: $e');
+      // Non-fatal - don't block provisioning
+    }
+  }
+
+  /// Updates the workspace with GCP project verified status and project number.
+  /// Called after createTenantProject succeeds and returns a projectNumber.
+  Future<void> _updateWorkspaceGcpVerified(
+    String workspaceId,
+    String projectNumber,
+  ) async {
+    try {
+      final firestore = FirebaseFirestore.instanceFor(app: _firebaseManager.defaultApp);
+      await firestore.collection('workspaces').doc(workspaceId).update({
+        'gcpProjectVerified': true,
+        'gcpProjectNumber': projectNumber,
+      });
+      debugPrint(
+        'TenantProvisioner: Updated workspace $workspaceId as GCP verified with projectNumber: $projectNumber',
+      );
+    } catch (e) {
+      debugPrint('TenantProvisioner: Failed to update GCP verified status: $e');
+      // Non-fatal - don't block provisioning
+    }
+  }
+
+  /// Updates granular provisioning flags on the workspace document.
+  /// Called after each provisioning step completes in the Cloud Function.
+  Future<void> _updateWorkspaceProvisioningFlags(
+    String workspaceId, {
+    required bool firebaseEnabled,
+    required bool apisEnabled,
+    required bool firestoreDbCreated,
+    required bool authEnabled,
+  }) async {
+    try {
+      final firestore = FirebaseFirestore.instanceFor(app: _firebaseManager.defaultApp);
+      await firestore.collection('workspaces').doc(workspaceId).update({
+        'firebaseEnabled': firebaseEnabled,
+        'apisEnabled': apisEnabled,
+        'firestoreDbCreated': firestoreDbCreated,
+        'authEnabled': authEnabled,
+      });
+      debugPrint(
+        'TenantProvisioner: Updated workspace $workspaceId provisioning flags — '
+        'firebaseEnabled=$firebaseEnabled, apisEnabled=$apisEnabled, '
+        'firestoreDbCreated=$firestoreDbCreated, authEnabled=$authEnabled',
+      );
+    } catch (e) {
+      debugPrint('TenantProvisioner: Failed to update provisioning flags: $e');
+    }
+  }
+
+  /// Marks the workspace as having successfully deployed Firestore rules.
+  Future<void> _updateWorkspaceRulesDeployed(String workspaceId) async {
+    try {
+      final firestore = FirebaseFirestore.instanceFor(app: _firebaseManager.defaultApp);
+      await firestore.collection('workspaces').doc(workspaceId).update({
+        'rulesDeployed': true,
+      });
+      debugPrint('TenantProvisioner: Marked workspace $workspaceId rules as deployed');
+    } catch (e) {
+      debugPrint('TenantProvisioner: Failed to update rulesDeployed: $e');
+    }
+  }
+
+  /// Updates the workspace onboarding status.
+  Future<void> _updateWorkspaceOnboardingStatus(
+    String workspaceId,
+    String status, {
+    String? failedStep,
+    String? lastError,
+  }) async {
+    try {
+      final firestore = FirebaseFirestore.instanceFor(app: _firebaseManager.defaultApp);
+      final updateData = <String, dynamic>{
+        'onboardingStatus': status,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      if (failedStep != null) updateData['provisioningFailedStep'] = failedStep;
+      if (lastError != null) updateData['provisioningLastError'] = lastError;
+      await firestore.collection('workspaces').doc(workspaceId).update(updateData);
+      debugPrint('TenantProvisioner: Updated workspace $workspaceId onboardingStatus=$status');
+    } catch (e) {
+      debugPrint('TenantProvisioner: Failed to update onboardingStatus: $e');
     }
   }
 }

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -76,6 +78,17 @@ class _WorkspaceProvisioningProgressModalState
   late String _logId;
   late final WorkspaceProvisioningClientService _client;
 
+  // Real-time Firestore listen subscription for workspace_provision_logs/{_logId}.
+  // Stored explicitly so it can be cancelled before [disposeTenant()] in the
+  // provisioner, preventing the FIRESTORE INTERNAL ASSERTION FAILED (ID: b815)
+  // error that occurs when a watch-target callback arrives after the
+  // FirebaseApp is deleted.
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>?>? _logsSubscription;
+
+  // Cached latest log lines, updated by the listener callback via setState().
+  // Used by _buildBody() so the UI never reads from a StreamBuilder.
+  List<_LogLine> _lines = [];
+
   WorkspaceProvisionResult? _result;
   Object? _error;
   bool _running = false;
@@ -86,7 +99,58 @@ class _WorkspaceProvisioningProgressModalState
     super.initState();
     _logId = widget.initialLogId;
     _client = widget.provisioningClient ?? WorkspaceProvisioningClientService();
+    _startLogsStream();
     WidgetsBinding.instance.addPostFrameCallback((_) => _runProvision());
+  }
+
+  /// Starts an explicit Firestore [StreamSubscription] on
+    /// [workspace_provision_logs/{_logId}] that updates [_lines] via
+    /// [setState()]. The subscription is stored in [_logsSubscription] so it
+    // can be cancelled in [dispose()] and also before [disposeTenant()] in the
+    // provisioner, preventing the FIRESTORE INTERNAL ASSERTION FAILED (ID: b815)
+    // error that occurs when a watch-target callback arrives after app delete.
+  void _startLogsStream() {
+    final firestore = ControlPlaneFirebase.instance.firestore;
+    _logsSubscription = firestore
+        .collection('workspace_provision_logs')
+        .doc(_logId)
+        .snapshots()
+        .listen(
+          (DocumentSnapshot<Map<String, dynamic>>? snapshot) async {
+            if (!mounted) return;
+            final data = snapshot?.data();
+            final status = (data?['status'] as String?) ?? '';
+            _lines = _parseLogs(data?['logs']);
+
+            if (_result != null || status == 'succeeded') {
+              // Provisioning succeeded — stop listening.
+              await _logsSubscription!.cancel();
+              _logsSubscription = null;
+              if (!mounted) return;
+              setState(() {});
+              return;
+            }
+            if (_error != null || status == 'failed') {
+              // Provisioning failed — stop listening.
+              await _logsSubscription!.cancel();
+              _logsSubscription = null;
+              if (!mounted) return;
+              setState(() {});
+              return;
+            }
+            // Still processing — update UI.
+            if (mounted) {
+              setState(() {});
+            }
+          },
+          // onError: treat SDK errors as transient; keep listening.
+          onError: (Object error) {
+            debugPrint(
+              'WorkspaceProvisioningProgressModal: logs stream error: $error',
+            );
+          },
+          // cancelOnError: false — keep listening even after an error.
+        );
   }
 
   Future<void> _runProvision() async {
@@ -167,6 +231,32 @@ class _WorkspaceProvisioningProgressModalState
     }
     lines.sort((a, b) => a.seq.compareTo(b.seq));
     return lines;
+  }
+
+  /// Cancels the explicit [StreamSubscription] observing
+  /// [workspace_provision_logs/{_logId}] so the SDK's TargetState no longer
+  // expects watch-target callbacks after the FirebaseApp is deleted,
+  // preventing the FIRESTORE INTERNAL ASSERTION FAILED (ID: b815) error that
+  // occurred when a watch-target response arrived after app delete.
+  // [StreamSubscription.cancel()] is safe to call multiple times.
+  @override
+  void dispose() {
+    // (a) Cancel the explicit StreamSubscription so the SDK's TargetState
+    //     no longer expects watch-target callbacks after the FirebaseApp is
+    //     deleted, preventing the FIRESTORE INTERNAL ASSERTION FAILED (ID: b815)
+    //     error that occurred when a watch-target response arrived after app
+    //     delete. StreamSubscription.cancel() is safe to call multiple times.
+    _logsSubscription?.cancel();
+    _logsSubscription = null;
+    super.dispose();
+  }
+
+  /// Exposes the underlying [StreamSubscription] cancel action so that external
+  /// code (e.g. the provisioner's [_teardownTenant] callback) can cancel the
+  // Firestore listen target before the tenant FirebaseApp is deleted.
+  void cancelLogsSubscription() {
+    _logsSubscription?.cancel();
+    _logsSubscription = null;
   }
 
   @override
@@ -253,34 +343,32 @@ class _WorkspaceProvisioningProgressModalState
   }
 
   Widget _buildBody() {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: ControlPlaneFirebase.instance.firestore
-          .collection('workspace_provision_logs')
-          .doc(_logId)
-          .snapshots(),
-      builder: (context, snap) {
-        final data = snap.data?.data();
-        final status = (data?['status'] as String?) ?? '';
-        final lines = _parseLogs(data?['logs']);
-        final streamError = snap.hasError;
+    // If we have a cached result or error, render the settled view immediately.
+    if (_result != null) {
+      final slug = _result?.workspaceSlug ?? '';
+      return _buildSuccess(slug, []);
+    }
+    if (_error != null) {
+      return _buildError(_error!.toString(), []);
+    }
 
-        if (_result != null || status == 'succeeded') {
-          final slug = _result?.workspaceSlug ??
-              (data?['workspaceSlug'] as String? ?? '');
-          return _buildSuccess(slug, lines);
-        }
-        if (_error != null || status == 'failed') {
-          final errorMessage = status == 'failed'
-              ? (data?['errorMessage'] as String? ?? _error?.toString() ?? '')
-              : (_error?.toString() ?? '');
-          return _buildError(errorMessage, lines);
-        }
-        return _buildProcessing(lines, streamError);
-      },
-    );
+    // Otherwise, render using the explicit listen subscription state.
+    // If the subscription is active and has delivered at least one event,
+    // show the latest log lines; otherwise show the processing indicator.
+    if (_logsSubscription != null && _logsSubscription!.isPaused == false) {
+      // Subscription is active — show lines if available, otherwise indicator.
+      if (_lines.isEmpty) {
+        return _buildProcessing([]);
+      }
+      // Show the latest log lines.
+      return _buildProcessing(_lines);
+    }
+
+    // No subscription active yet — show the processing indicator.
+    return _buildProcessing([]);
   }
 
-  Widget _buildProcessing(List<_LogLine> lines, bool streamError) {
+  Widget _buildProcessing(List<_LogLine> lines, {bool streamError = false}) {
     final current = lines.isEmpty
         ? 'Waiting for provisioning to start…'
         : lines.last.message;
@@ -341,284 +429,288 @@ class _WorkspaceProvisioningProgressModalState
 
   Widget _buildSuccess(String slug, List<_LogLine> lines) {
     final url = _dashboardUrl(slug);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          children: [
-            const Icon(Icons.check_circle_rounded, color: kCoGreen, size: 46),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'Workspace provisioned',
-                    style: TextStyle(
-                      color: kCoLabel,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 17,
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.check_circle_rounded, color: kCoGreen, size: 46),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Workspace provisioned',
+                      style: TextStyle(
+                        color: kCoLabel,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 17,
+                      ),
                     ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Company Admin credentials were sent to '
+                      '${widget.request.companyAdminEmail}.',
+                      style: const TextStyle(
+                          color: kCoSubtle, fontSize: 12.5, height: 1.4),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 18),
+          if (url.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppThemeColors.darkCanvas,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: kCoBorder),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      const Icon(Icons.link_rounded, color: kCoAccent, size: 18),
+                      const SizedBox(width: 8),
+                      const Expanded(
+                        child: Text(
+                          'Workspace dashboard link',
+                          style: TextStyle(
+                            color: kCoLabel,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                      InkWell(
+                        onTap: () => _copyInviteLink(url),
+                        borderRadius: BorderRadius.circular(8),
+                        child: Padding(
+                          padding: const EdgeInsets.all(6),
+                          child: Icon(
+                            _copiedUrl == url
+                                ? Icons.check_rounded
+                                : Icons.copy_rounded,
+                            color: _copiedUrl == url ? kCoGreen : kCoSubtle,
+                            size: 18,
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 3),
+                  const SizedBox(height: 8),
                   Text(
-                    'Company Admin credentials were sent to '
-                    '${widget.request.companyAdminEmail}.',
+                    url,
                     style: const TextStyle(
-                        color: kCoSubtle, fontSize: 12.5, height: 1.4),
+                      color: kCoAccent,
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      fontFamily: 'monospace',
+                    ),
                   ),
                 ],
               ),
             ),
+            const SizedBox(height: 16),
           ],
-        ),
-        const SizedBox(height: 18),
-        if (url.isNotEmpty) ...[
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: AppThemeColors.darkCanvas,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: kCoBorder),
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  children: [
-                    const Icon(Icons.link_rounded, color: kCoAccent, size: 18),
-                    const SizedBox(width: 8),
-                    const Expanded(
-                      child: Text(
-                        'Workspace dashboard link',
-                        style: TextStyle(
-                          color: kCoLabel,
-                          fontWeight: FontWeight.w700,
-                          fontSize: 13,
-                        ),
-                      ),
+          if (lines.isNotEmpty) ...[
+            const _LogLabel(label: 'AUDIT LOG'),
+            const SizedBox(height: 6),
+            SizedBox(height: 130, child: _LogTerminal(lines: lines)),
+            const SizedBox(height: 16),
+          ],
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.of(context).pop(_result),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: kCoLabel,
+                    side: const BorderSide(color: kCoBorder),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
                     ),
-                    InkWell(
-                      onTap: () => _copyInviteLink(url),
-                      borderRadius: BorderRadius.circular(8),
-                      child: Padding(
-                        padding: const EdgeInsets.all(6),
-                        child: Icon(
-                          _copiedUrl == url
-                              ? Icons.check_rounded
-                              : Icons.copy_rounded,
-                          color: _copiedUrl == url ? kCoGreen : kCoSubtle,
-                          size: 18,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  url,
-                  style: const TextStyle(
-                    color: kCoAccent,
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'monospace',
                   ),
+                  child: const Text('Done'),
                 ),
-              ],
-            ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 2,
+                child: FilledButton.icon(
+                  onPressed: url.isEmpty ? null : () => _copyInviteLink(url),
+                  style: FilledButton.styleFrom(
+                    backgroundColor: kCoAccent,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  icon: Icon(
+                    _copiedUrl == url ? Icons.check_rounded : Icons.copy_rounded,
+                    size: 18,
+                  ),
+                  label: Text(_copiedUrl == url
+                      ? 'Invite link copied'
+                      : 'Copy invite link'),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(height: 16),
         ],
-        if (lines.isNotEmpty) ...[
-          const _LogLabel(label: 'AUDIT LOG'),
-          const SizedBox(height: 6),
-          SizedBox(height: 130, child: _LogTerminal(lines: lines)),
-          const SizedBox(height: 16),
-        ],
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: () => Navigator.of(context).pop(_result),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: kCoLabel,
-                  side: const BorderSide(color: kCoBorder),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                child: const Text('Done'),
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              flex: 2,
-              child: FilledButton.icon(
-                onPressed: url.isEmpty ? null : () => _copyInviteLink(url),
-                style: FilledButton.styleFrom(
-                  backgroundColor: kCoAccent,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                ),
-                icon: Icon(
-                  _copiedUrl == url ? Icons.check_rounded : Icons.copy_rounded,
-                  size: 18,
-                ),
-                label: Text(_copiedUrl == url
-                    ? 'Invite link copied'
-                    : 'Copy invite link'),
-              ),
-            ),
-          ],
-        ),
-      ],
+      ),
     );
   }
 
   Widget _buildError(String errorMessage, List<_LogLine> lines) {
     final detail = errorMessage.trim();
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        const Row(
-          children: [
-            Icon(Icons.error_rounded, color: kCoRed, size: 46),
-            SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Provisioning failed',
-                    style: TextStyle(
-                      color: kCoLabel,
-                      fontWeight: FontWeight.w800,
-                      fontSize: 17,
-                    ),
-                  ),
-                  SizedBox(height: 3),
-                  Text(
-                    'The workspace could not be created. Review the audit log '
-                    'below, then retry.',
-                    style: TextStyle(
-                        color: kCoSubtle, fontSize: 12.5, height: 1.4),
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        if (detail.isNotEmpty) ...[
-          Container(
-            padding: const EdgeInsets.all(12),
-            decoration: BoxDecoration(
-              color: AppThemeColors.darkCanvas,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: kCoRed.withValues(alpha: 0.4)),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Icon(Icons.report_gmailerrorred_rounded,
-                    color: kCoRed, size: 18),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    detail.length > 200
-                        ? '${detail.substring(0, 200)}…'
-                        : detail,
-                    style: const TextStyle(
-                        color: kCoErrorLight, fontSize: 12.5, height: 1.4),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 8),
-          ExpansionTile(
-            tilePadding: EdgeInsets.zero,
-            title: const Text(
-              'View complete error details',
-              style: TextStyle(
-                  color: kCoSubtle,
-                  fontSize: 12.5,
-                  fontWeight: FontWeight.w700),
-            ),
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Row(
             children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppThemeColors.darkCanvas,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: kCoBorder),
-                ),
-                child: SelectableText(
-                  detail,
-                  style: const TextStyle(
-                    color: kCoErrorLight,
-                    fontSize: 12,
-                    height: 1.5,
-                    fontFamily: 'monospace',
-                  ),
+              Icon(Icons.error_rounded, color: kCoRed, size: 46),
+              SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Provisioning failed',
+                      style: TextStyle(
+                        color: kCoLabel,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 17,
+                      ),
+                    ),
+                    SizedBox(height: 3),
+                    Text(
+                      'The workspace could not be created. Review the audit log '
+                      'below, then retry.',
+                      style: TextStyle(
+                          color: kCoSubtle, fontSize: 12.5, height: 1.4),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 12),
-        ],
-        if (lines.isNotEmpty) ...[
-          const _LogLabel(label: 'AUDIT LOG'),
-          const SizedBox(height: 6),
-          SizedBox(height: 120, child: _LogTerminal(lines: lines)),
           const SizedBox(height: 16),
-        ],
-        Row(
-          children: [
-            Expanded(
-              child: OutlinedButton(
-                onPressed: () => Navigator.of(context).pop(),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: kCoLabel,
-                  side: const BorderSide(color: kCoBorder),
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+          if (detail.isNotEmpty) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppThemeColors.darkCanvas,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: kCoRed.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Icon(Icons.report_gmailerrorred_rounded,
+                      color: kCoRed, size: 18),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      detail.length > 200
+                          ? '${detail.substring(0, 200)}…'
+                          : detail,
+                      style: const TextStyle(
+                          color: kCoErrorLight, fontSize: 12.5, height: 1.4),
+                    ),
                   ),
-                ),
-                child: const Text('Close'),
+                ],
               ),
             ),
-            const SizedBox(width: 12),
-            Expanded(
-              flex: 2,
-              child: FilledButton.icon(
-                onPressed: _running ? null : _retry,
-                style: FilledButton.styleFrom(
-                  backgroundColor: kCoAccent,
-                  padding: const EdgeInsets.symmetric(vertical: 14),
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+            const SizedBox(height: 8),
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: const Text(
+                'View complete error details',
+                style: TextStyle(
+                    color: kCoSubtle,
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700),
+              ),
+              children: [
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppThemeColors.darkCanvas,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: kCoBorder),
+                  ),
+                  child: SelectableText(
+                    detail,
+                    style: const TextStyle(
+                      color: kCoErrorLight,
+                      fontSize: 12,
+                      height: 1.5,
+                      fontFamily: 'monospace',
+                    ),
                   ),
                 ),
-                icon: _running
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: kCoWhite),
-                      )
-                    : const Icon(Icons.refresh_rounded, size: 18),
-                label: Text(_running ? 'Retrying…' : 'Retry'),
-              ),
+              ],
             ),
+            const SizedBox(height: 12),
           ],
-        ),
-      ],
+          if (lines.isNotEmpty) ...[
+            const _LogLabel(label: 'AUDIT LOG'),
+            const SizedBox(height: 6),
+            SizedBox(height: 120, child: _LogTerminal(lines: lines)),
+            const SizedBox(height: 16),
+          ],
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: kCoLabel,
+                    side: const BorderSide(color: kCoBorder),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  child: const Text('Close'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 2,
+                child: FilledButton.icon(
+                  onPressed: _running ? null : _retry,
+                  style: FilledButton.styleFrom(
+                    backgroundColor: kCoAccent,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                  ),
+                  icon: _running
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: kCoWhite),
+                        )
+                      : const Icon(Icons.refresh_rounded, size: 18),
+                  label: Text(_running ? 'Retrying…' : 'Retry'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

@@ -8,7 +8,7 @@ import '../../services/platform_service.dart';
 import '../control_plane_firebase.dart';
 import '../models/workspace.dart';
 import '../repositories/workspace_allocation_repository.dart';
-import 'workspace_registry_service.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 /// What a permanent workspace deletion produced.
 class WorkspaceDeletionReport {
@@ -41,14 +41,11 @@ class WorkspaceDeletionReport {
 /// trail) so the operator still gets an accurate success/error outcome.
 class WorkspaceDeletionService {
   WorkspaceDeletionService({
-    WorkspaceRegistryService? registry,
     WorkspaceAllocationRepository? allocations,
     FirebaseManager? firebaseManager,
-  })  : _registry = registry ?? WorkspaceRegistryService(),
-        _allocations = allocations ?? WorkspaceAllocationRepository(),
+  })  : _allocations = allocations ?? WorkspaceAllocationRepository(),
         _firebaseManager = firebaseManager ?? FirebaseManager.instance;
 
-  final WorkspaceRegistryService _registry;
   final WorkspaceAllocationRepository _allocations;
   final FirebaseManager _firebaseManager;
 
@@ -77,52 +74,85 @@ class WorkspaceDeletionService {
     'permissions',
   ];
 
-  /// Permanently deletes [workspace] and its data. Returns a report carrying
-  /// best-effort cleanup warnings (if any) after the registry entry is gone.
-  Future<WorkspaceDeletionReport> deleteWorkspace(Workspace workspace) async {
-    final warnings = <String>[];
+/// Permanently deletes [workspace] and its data by calling the Cloud Function.
+/// Returns a report carrying any warnings or errors from the deletion process.
+Future<WorkspaceDeletionReport> deleteWorkspace(Workspace workspace) async {
+  final warnings = <String>[];
 
-    // Capture tenant hints (companyId/adminUid) from the raw registry doc
-    // before it is removed — the Workspace model does not carry them.
-    final raw = await _readRegistryExtras(workspace.workspaceId);
-    final companyId = raw['companyId'] as String?;
-    final adminUid = raw['adminUid'] as String?;
+  // Capture tenant hints (companyId/adminUid) from the raw registry doc
+  // before it is removed — the Workspace model does not carry them.
+  final raw = await _readRegistryExtras(workspace.workspaceId);
+  final companyId = raw['companyId'] as String?;
+  final adminUid = raw['adminUid'] as String?;
 
-    // Authoritative step: remove the registry entry. The Workspaces stream
-    // drops the workspace immediately. Throws on failure.
-    await _registry.deleteWorkspace(workspace.workspaceId);
+  // Call the Cloud Function to delete the workspace and its GCP project
+  try {
+    final functions = FirebaseFunctions.instance;
+    final result = await functions.httpsCallable('deleteWorkspace').call({
+      'workspaceId': workspace.workspaceId,
+      'projectId': workspace.firebaseConfig.projectId,
+      'confirmation': 'DELETE',
+    }).timeout(const Duration(seconds: 300));
 
-    if (workspace.firebaseConfig.isValid) {
-      try {
-        await _purgeTenantData(
-          workspace,
-          companyId: companyId,
-          adminUid: adminUid,
-          warnings: warnings,
-        );
-      } catch (e) {
-        warnings.add('Tenant data purge failed: $e');
-      }
-    } else {
-      warnings.add(
-        'Skipped tenant data purge: the workspace configuration is incomplete.',
-      );
+    final data = result.data as Map<String, dynamic>;
+    debugPrint('Cloud Function deleteWorkspace succeeded: $data');
+
+    // Verify the response indicates success
+    if (data['success'] != true) {
+      throw StateError('Cloud Function returned error: ${data['error'] ?? 'unknown error'}');
     }
 
-    try {
-      await _purgeControlPlane(workspace, warnings: warnings);
-    } catch (e) {
-      warnings.add('Control-plane cleanup failed: $e');
+    // Add any warnings from the Cloud Function
+    if (data['warnings'] is List) {
+      warnings.addAll(List<String>.from(data['warnings']));
     }
 
-    await _recordDeletionAudit(
-      workspace,
-      companyId: companyId,
-      warnings: warnings,
+    debugPrint('WorkspaceDeletionService: Cloud Function deletion succeeded');
+
+    // Clean up control plane references (tenant_users index, project allocations, provisioning logs)
+    await _purgeControlPlane(workspace, warnings: warnings);
+
+  } on FirebaseFunctionsException catch (e) {
+    debugPrint('Cloud Function deleteWorkspace failed: ${e.code} - ${e.message}');
+    throw StateError(
+      'Failed to delete workspace via Cloud Function: ${e.message}. '
+      'Ensure the Cloud Functions are deployed and the master service account has '
+      'Project Deleter role on folder 818058604638. '
+      'Details: ${e.details}',
     );
-
-    return WorkspaceDeletionReport(warnings: warnings);
+  } catch (e) {
+    debugPrint('WorkspaceDeletionService.deleteWorkspace: error - $e');
+    rethrow;
   }
+
+  // Clean up local tenant data references (best-effort)
+  // The Cloud Function handles the GCP project deletion and master Firestore cleanup
+  if (workspace.firebaseConfig.isValid) {
+    try {
+      await _purgeTenantData(
+        workspace,
+        companyId: companyId,
+        adminUid: adminUid,
+        warnings: warnings,
+      );
+    } catch (e) {
+      warnings.add('Tenant data purge failed: $e');
+    }
+  } else {
+    warnings.add(
+      'Skipped tenant data purge: the workspace configuration is incomplete.',
+    );
+  }
+
+  // Record local audit trail
+  await _recordDeletionAudit(
+    workspace,
+    companyId: companyId,
+    warnings: warnings,
+  );
+
+  return WorkspaceDeletionReport(warnings: warnings);
+}
 
   Future<Map<String, dynamic>> _readRegistryExtras(String workspaceId) async {
     try {

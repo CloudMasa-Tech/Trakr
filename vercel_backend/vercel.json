@@ -1,8 +1,0 @@
-{
-  "crons": [
-    {
-      "path": "/api/qrNotifications",
-      "schedule": "0 3 * * *"
-    }
-  ]
-}

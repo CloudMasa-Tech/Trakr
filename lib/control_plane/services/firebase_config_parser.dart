@@ -147,10 +147,11 @@ class FirebaseConfigParser {
   }
 
   static FirebaseConfigParseResult _parseWebConfig(Map<String, dynamic> map) {
+    final projectId = _string(map['projectId']);
     final config = WorkspaceFirebaseConfig(
       apiKey: _string(map['apiKey']),
       appId: _string(map['appId']),
-      projectId: _string(map['projectId']),
+      projectId: projectId,
       messagingSenderId: _string(map['messagingSenderId']),
       storageBucket: _string(map['storageBucket']),
       authDomain: _string(map['authDomain']),

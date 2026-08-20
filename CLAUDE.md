@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**TЯAKR** (package name `attendqr`, README title "AttendQR Enterprise") — a multi-tenant, white-labelled Flutter QR/geofence attendance-management system with a Firebase backend (Auth, Firestore, Cloud Messaging) plus a Vercel serverless backend for push/email/cron. Targets Android, iOS, web, Windows, macOS, Linux.
+**TЯAKR** (package name `attendqr`, README title "AttendQR Enterprise") — a multi-tenant, white-labelled Flutter QR/geofence attendance-management system with a Firebase backend (Auth, Firestore, Cloud Messaging, Cloud Functions). Targets Android, iOS, web, Windows, macOS, Linux.
 
 ## Common Development Commands
 
@@ -16,8 +16,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Build iOS app**: `flutter build ios --release`
 - **Build web**: `flutter build web`
 - **Regenerate launcher icons**: `flutter pub run flutter_launcher_icons` (config at the bottom of `pubspec.yaml`, source image `assets/trakr00-removebg-preview.png`)
-- **Vercel backend** (in `vercel_backend/`, Node.js serverless functions): deploy the whole directory with `vercel deploy --prod` from `vercel_backend/`. It runs on the **Spark plan** — all server-side push, email, and scheduled jobs live here. `FIREBASE_SERVICE_ACCOUNT` is **only** used by email/notification cron functions (`sendCredentialEmail`, `qrNotifications`, `syncMissedCheckout`, `attendanceReminders`). **Workspace provisioning does NOT use** `FIREBASE_SERVICE_ACCOUNT` — it is client-side only using the Firebase Client SDK. No `serviceAccountKey.json` or private keys are ever stored in Flutter or sent to the client.
+- **Firebase Cloud Functions** (in `functions/`, TypeScript, Gen 2): deploy with `firebase deploy --only functions --project trakradminsetup-28437`. Runs on the **Blaze plan** — server-side tenant rules/index deployment, superadmin claim management. `SERVICE_ACCOUNT_JSON` secret in Secret Manager is used by functions to call Firebase Admin SDK on tenant projects.
 - **Firestore rules/indexes**: `firebase deploy --only firestore:rules,firestore:indexes`
+- **Deploy master rules**: `./deploy-master-rules.sh` (swaps in `firestore.rules.master`, deploys to `trakradminsetup-28437`, restores tenant rules)
 
 ## Architecture
 
@@ -45,7 +46,7 @@ Routing is `MaterialApp.routes`, with `AuthGateScreen` (`lib/screens/auth/auth_g
 2. The scanner accepts **two QR payload formats**: JSON `{token, employeeId}` or query string `token=…&employeeId=…`.
 3. The screen reads device GPS, fetches the relevant office's `offices`/`geo_config` doc from Firestore, and checks distance against a radius. **Default is 50m** (`_radiusInMeters = 50.0` in `staff_scan_qr_screen.dart`), overridable per-office via the stored `radius` field. `GeoFenceService.validationRadius()` centralizes the effective-radius calculation (accounts for GPS accuracy + safety margin).
 4. Submission goes through `AttendanceService.markAttendance(...)` (client, `lib/services/attendance_service.dart`) which validates the QR token and geofence directly against Firestore — there is no server-side callable in the Spark-only architecture.
-5. The Vercel cron `/api/qrNotifications` (in `vercel_backend/vercel.json`, daily at 3 AM) rotates per-tenant tokens in `qr_tokens` (90-day expiry window logic baked in).
+5. The Cloud Function cron (via `qrNotifications` equivalent logic in scheduled functions) rotates per-tenant tokens in `qr_tokens` (90-day expiry window logic).
 
 Note: `lib/services/qr_service.dart` exists but is **empty (0 lines)** — all QR logic actually lives in `qr_attendance_scanner.dart`, `staff_scan_qr_screen.dart`, and `AttendanceService`.
 
@@ -66,23 +67,19 @@ Note: `lib/services/qr_service.dart` exists but is **empty (0 lines)** — all Q
 | `manager_account_service.dart` | 130 | Manager onboarding/account management |
 | `attendance_log_service.dart` | 65 | Thin wrapper over `attendance_logs` |
 | `white_label_service.dart` | 55 | Reads/writes tenant branding config |
-| `email_service.dart` | 50 | Calls the Vercel `sendCredentialEmail` endpoint |
+| `email_service.dart` | 50 | Sends credentials via email (uses Cloud Function if configured) |
 | `profile_photo_sync_service.dart` | 40 | Keeps cached profile photos in sync across collections |
 | `qr_service.dart` | 0 | **Empty — dead file** |
 
 ### Models (`lib/models/`)
 `Staff`, `AttendanceModel`, `AttendanceLog`, `LeaveRequest`, `PermissionRequest`, `ManagerModel`, `WhiteLabelModel`, `NotificationModel`. `CheckoutRequest`, `WeeklyAttendance`, `MonthlyAttendance`, and several private helper classes (`AttendanceSubmissionResult`, `AttendanceAlert`, etc.) are defined inline at the bottom of `attendance_service.dart` rather than under `lib/models/`.
 
-### Vercel backend (`vercel_backend/api/`) — replaces the removed Cloud Functions
-- `sendNotification.js` — FCM push for arbitrary recipients (phone/identifier/role). The Flutter app calls this via `NotificationService`. Contains the text-cleanup helpers (`cleanNotificationText`, `cleanNotificationTitle`) that strip legacy "TЯAKR •"/"TRAKA" brand prefixes and reword raw event text ("staff checked in" → "Secure Check-In", etc.).
-- `notificationAction.js` — POST endpoint handling approve/reject actions taken from a push notification (ports the old `processNotificationAction` Firestore trigger + `handleLeaveAction`/`handlePermissionAction`/`handleCheckoutAction`).
-- `sendCredentialEmail.js` — sends login credentials via nodemailer (requires `SMTP_EMAIL`/`SMTP_PASSWORD` env vars).
-- `broadcastNotification.js` — platform-wide broadcast push used by the super-admin composer in `notifications_module.dart`.
-- `qrNotifications.js` — cron, daily at 3 AM, rotates `qr_tokens` per tenant (90-day expiry window logic).
-- `syncMissedCheckout.js` — cron (`*/15 * * * *`), scans the last 7 days of `attendance` for missing checkouts and pushes actionable approve requests to admins.
-- `attendanceReminders.js` — cron (`*/15 * * * *`), sends check-in/check-out reminder pushes near configured cutoff times.
-- `lib/helpers.js`, `lib/firebaseAdmin.js` — shared Firebase Admin init, token collection, FCM send, and cron-secret helpers.
-- Cron jobs are declared in `vercel_backend/vercel.json`; each cron endpoint may require `CRON_SECRET`/`QR_CRON_SECRET`. Note: Vercel Hobby-plan crons run at most once per day — upgrade or self-host if the 15-minute cadence matters.
+### Firebase Cloud Functions (`functions/src/`) — Gen 2, TypeScript
+- `deployTenantRules` — Callable function. Deploys `firestore.rules` and `firestore.indexes.json` to a tenant project via Security Rules REST API + Firestore Admin REST API. Called by Flutter during tenant provisioning. Requires `super_admin` custom claim. Uses `SERVICE_ACCOUNT_JSON` secret from Secret Manager.
+- `setSuperAdminClaim` — Callable function. Sets `super_admin: true` custom claim on a user in the master project. Only callable by existing superadmins. Enables Firestore rules to check `request.auth.token.super_admin == true` instead of Firestore read.
+- `createTenantProject` — Callable function. Creates a new GCP/Firebase project under folder `818058604638` (tenant-projects) using Cloud Resource Manager API v3. Called by Flutter during tenant provisioning to automatically create the Firebase project. Requires `super_admin` custom claim. The created project automatically inherits IAM roles (`firebaserules.admin`, `datastore.indexAdmin`, `resourcemanager.projectCreator`) via folder-level IAM inheritance from the parent folder.
+- Cron functions (Gen 2 scheduled) for `qrNotifications`, `syncMissedCheckout`, `attendanceReminders` — equivalent to former Vercel cron endpoints.
+- `sendNotification`, `notificationAction`, `sendCredentialEmail`, `broadcastNotification` — migrated from former Vercel endpoints.
 
 ### Firestore collections
 `staff`, `managers`, `admins`, `users`, `staff_metadata`, `attendance`, `attendance_alerts`, `attendance_logs`, `checkout_requests`, `leave_requests`, `permission_requests`, `notifications`, `notification_actions`, `event_dedupe`, `qr_tokens`, `geo_config`, `offices`, `app_config`, `settings`, plus per-tenant white-label config. (`employees` and `tenants` also appear in `firestore.rules`/old Cloud Functions but aren't written by the client — likely legacy or future multi-tenant scaffolding.)
@@ -90,7 +87,7 @@ Note: `lib/services/qr_service.dart` exists but is **empty (0 lines)** — all Q
 ### Firestore rules
 `firestore.rules` requires `request.auth != null` (`signedIn()`) for read/write on every listed collection. The rules enforce tenant isolation and prevent privilege escalation:
 
-- `isSuperAdmin()` — only the platform Super Admin (resolved via `users/{uid}.role == 'super_admin'`) has platform-wide authority.
+- `isSuperAdmin()` — only the platform Super Admin (resolved via `users/{uid}.role == 'super_admin'` OR custom claim `super_admin == true`) has platform-wide authority.
 - `inCompany(companyId)` — a signed-in user belongs to a company if they hold the `company_admin` `roleId` or are the Super Admin.
 - `sameCompanyOnCreate()` / `sameCompany()` — writes/reads are scoped to the company owning the caller's `users.{uid}.companyId`.
 - Privilege fields (`role/roleId/roleName/roleLevel/permissionIds`) may only be assigned by the Super Admin, a Company Admin, or the tenant's **seeded bootstrap admin** (verified via `app_config/admin_access` primaryAdminEmail match). Self-registered accounts must create their docs without any privilege fields (`noPrivilegeFields` guard), and may never change them on update (`unchangedPrivileges` guard).
@@ -98,11 +95,11 @@ Note: `lib/services/qr_service.dart` exists but is **empty (0 lines)** — all Q
 
 The catch-all `/{document=**}` denies all read/write. Row-level authorization is the natural next step before production multi-tenant use.
 
-**Important**: On Spark plan, Firestore rules for each tenant project must be **manually deployed** via `firebase deploy --only firestore:rules` after the project is created and Email/Password auth is enabled. The client SDK cannot auto-deploy rules on Spark.
+**Important**: On Spark plan, Firestore rules for each tenant project must be **manually deployed** via `firebase deploy --only firestore:rules` after the project is created and Email/Password auth is enabled. The client SDK cannot auto-deploy rules on Spark. **On Blaze, tenant rules are deployed automatically via `deployTenantRules` Cloud Function during provisioning.**
 
 ## Key Dependencies
 
-- `firebase_core`, `firebase_auth`, `cloud_firestore`, `firebase_messaging`, `google_sign_in`
+- `firebase_core`, `firebase_auth`, `cloud_firestore`, `firebase_messaging`, `google_sign_in`, `cloud_functions`
 - `provider` (state) — not Riverpod/Bloc
 - `mobile_scanner` (scanning), `qr_flutter` (generation)
 - `geolocator`, `permission_handler`, `flutter_map` + `latlong2` (office map picking)
@@ -112,6 +109,8 @@ The catch-all `/{document=**}` denies all read/write. Row-level authorization is
 ## Notes for future changes
 
 - `attendance_service.dart` is the highest-risk file to edit — it's nearly 4000 lines, with several streams keyed off manager-name/employee-id string matching (see `_teamEmployeeIdsStream`, `_addAlias`) rather than strict IDs. Grep for the specific `Stream`/`Future` method by name rather than reading the whole file.
-- **No Cloud Storage anywhere** — the app targets the Firebase Spark plan (Auth + Firestore only, no Storage, no Cloud Functions at runtime). Logos (`CompanyLogoService`, `WhiteLabelService.uploadLogo`) and profile photos are stored as base64 `data:` URLs inside Firestore docs; never reintroduce `firebase_storage` or Storage bucket provisioning.
+- **No Cloud Storage anywhere** — the app targets the Firebase Spark plan (Auth + Firestore only, no Storage, no Cloud Functions at runtime for tenant apps). Logos (`CompanyLogoService`, `WhiteLabelService.uploadLogo`) and profile photos are stored as base64 `data:` URLs inside Firestore docs; never reintroduce `firebase_storage` or Storage bucket provisioning.
 - The README states the geofence default as 100m in places; the actual default in code (`staff_scan_qr_screen.dart`) is **50m** — trust the code over the README on this point.
 - No CI config, no Cursor/Copilot rule files, and no automated test suite currently exist in this repo.
+- **Tenant Firestore rules are now deployed automatically via Cloud Function `deployTenantRules` during provisioning** — no manual `firebase deploy` per tenant needed.
+- **Superadmin custom claim** (`super_admin: true`) is the preferred authorization mechanism in Firestore rules (checked via `request.auth.token.super_admin`). The fallback email match in `app_config/admin_access` remains for initial bootstrap.

@@ -57,17 +57,25 @@ class _LoginScreenState extends State<LoginScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     try {
-      await context.read<AuthSessionProvider>().signIn(
-            email: _emailCtrl.text,
-            password: _passwordCtrl.text,
-          );
+      final auth = context.read<AuthSessionProvider>();
+      await auth.signIn(
+        email: _emailCtrl.text,
+        password: _passwordCtrl.text,
+      );
 
       if (!mounted) return;
 
-      // Authentication is silent: the role is already resolved inside signIn().
-      // Go back to the auth gate; the router's redirect sends the signed-in
-      // user to `/workspace/:workspaceSlug/dashboard`.
-      context.go('/');
+      // Navigate directly to the workspace dashboard when we have the slug,
+      // instead of relying on the router's redirect which may not fire if
+      // the auth state hasn't fully propagated. This also avoids a full
+      // page reload to index.html that could occur with the redirect path.
+      final slug = auth.workspaceSlug;
+      final role = auth.role;
+      if (slug != null && slug.isNotEmpty && role != null && role != AppUserRole.superAdmin) {
+        context.go('/workspace/$slug/dashboard');
+      } else {
+        context.go('/');
+      }
     } catch (e) {
       if (!mounted) return;
       await _showLoginMessageDialog(

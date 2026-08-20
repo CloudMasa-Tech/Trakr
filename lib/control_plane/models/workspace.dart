@@ -23,8 +23,36 @@ class Workspace {
   /// explicit `workspaceSlug` from the registry/company records.
   final String workspaceSlug;
 
-  /// Registered legal/company name.
+  /// Registered legal/company name (source of truth, no length restriction).
   final String companyName;
+
+  /// The derived GCP project display name (auto-generated from companyName
+  /// to satisfy GCP constraints: 4-30 chars, alphanumeric + limited punctuation).
+  /// This may differ from [companyName] when the company name is < 4 chars.
+  final String? gcpProjectDisplayName;
+
+  /// Whether the GCP project has been verified to exist via Cloud Resource Manager API.
+  /// Set to true only after createTenantProject returns success with a confirmed projectNumber.
+  final bool gcpProjectVerified;
+
+  /// The GCP project number returned by Cloud Resource Manager API when the project was created.
+  /// Only populated when [gcpProjectVerified] is true.
+  final String? gcpProjectNumber;
+
+  /// Whether Firebase services have been enabled on the tenant project.
+  final bool firebaseEnabled;
+
+  /// Whether the required GCP APIs (Firestore, Auth, etc.) have been enabled.
+  final bool apisEnabled;
+
+  /// Whether the Firestore database has been created in Native mode.
+  final bool firestoreDbCreated;
+
+  /// Whether the Email/Password auth provider has been enabled.
+  final bool authEnabled;
+
+  /// Whether Firestore rules and indexes have been deployed.
+  final bool rulesDeployed;
 
   /// The Google Cloud project id of the workspace's tenant Firebase project.
   final String firebaseProjectId;
@@ -68,6 +96,14 @@ class Workspace {
     required this.workspaceCode,
     this.workspaceSlug = '',
     required this.companyName,
+    this.gcpProjectDisplayName,
+    this.gcpProjectVerified = false,
+    this.gcpProjectNumber,
+    this.firebaseEnabled = false,
+    this.apisEnabled = false,
+    this.firestoreDbCreated = false,
+    this.authEnabled = false,
+    this.rulesDeployed = false,
     required this.firebaseProjectId,
     required this.firebaseConfig,
     this.firebaseConfigured = false,
@@ -98,6 +134,14 @@ class Workspace {
       workspaceSlug: data['workspaceSlug'] as String? ??
           (data['workspaceCode'] as String? ?? ''),
       companyName: data['companyName'] as String? ?? '',
+      gcpProjectDisplayName: data['gcpProjectDisplayName'] as String?,
+      gcpProjectVerified: data['gcpProjectVerified'] as bool? ?? false,
+      gcpProjectNumber: data['gcpProjectNumber'] as String?,
+      firebaseEnabled: data['firebaseEnabled'] as bool? ?? false,
+      apisEnabled: data['apisEnabled'] as bool? ?? false,
+      firestoreDbCreated: data['firestoreDbCreated'] as bool? ?? false,
+      authEnabled: data['authEnabled'] as bool? ?? false,
+      rulesDeployed: data['rulesDeployed'] as bool? ?? false,
       firebaseProjectId: data['firebaseProjectId'] as String? ?? '',
       firebaseConfig: WorkspaceFirebaseConfig.fromMap(
         Map<String, dynamic>.from(
@@ -132,6 +176,15 @@ class Workspace {
       'workspaceCode': workspaceCode,
       'workspaceSlug': workspaceSlug,
       'companyName': companyName,
+      if (gcpProjectDisplayName != null)
+        'gcpProjectDisplayName': gcpProjectDisplayName,
+      'gcpProjectVerified': gcpProjectVerified,
+      if (gcpProjectNumber != null) 'gcpProjectNumber': gcpProjectNumber,
+      'firebaseEnabled': firebaseEnabled,
+      'apisEnabled': apisEnabled,
+      'firestoreDbCreated': firestoreDbCreated,
+      'authEnabled': authEnabled,
+      'rulesDeployed': rulesDeployed,
       'firebaseProjectId': firebaseProjectId,
       'firebaseConfig': firebaseConfig.toMap(),
       'firebaseConfigured': firebaseConfigured,
@@ -158,6 +211,14 @@ class Workspace {
     String? workspaceCode,
     String? workspaceSlug,
     String? companyName,
+    String? gcpProjectDisplayName,
+    bool? gcpProjectVerified,
+    String? gcpProjectNumber,
+    bool? firebaseEnabled,
+    bool? apisEnabled,
+    bool? firestoreDbCreated,
+    bool? authEnabled,
+    bool? rulesDeployed,
     String? firebaseProjectId,
     WorkspaceFirebaseConfig? firebaseConfig,
     bool? firebaseConfigured,
@@ -177,6 +238,14 @@ class Workspace {
       workspaceCode: workspaceCode ?? this.workspaceCode,
       workspaceSlug: workspaceSlug ?? this.workspaceSlug,
       companyName: companyName ?? this.companyName,
+      gcpProjectDisplayName: gcpProjectDisplayName ?? this.gcpProjectDisplayName,
+      gcpProjectVerified: gcpProjectVerified ?? this.gcpProjectVerified,
+      gcpProjectNumber: gcpProjectNumber ?? this.gcpProjectNumber,
+      firebaseEnabled: firebaseEnabled ?? this.firebaseEnabled,
+      apisEnabled: apisEnabled ?? this.apisEnabled,
+      firestoreDbCreated: firestoreDbCreated ?? this.firestoreDbCreated,
+      authEnabled: authEnabled ?? this.authEnabled,
+      rulesDeployed: rulesDeployed ?? this.rulesDeployed,
       firebaseProjectId: firebaseProjectId ?? this.firebaseProjectId,
       firebaseConfig: firebaseConfig ?? this.firebaseConfig,
       firebaseConfigured: firebaseConfigured ?? this.firebaseConfigured,

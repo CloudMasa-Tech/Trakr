@@ -1344,6 +1344,18 @@ Future<void> signIn({
     debugPrint('[AuthSessionProvider.signOut] complete');
   }
 
+  /// Forces a refresh of the current user's ID token.
+  /// This is useful after server-side custom claims changes (e.g., super_admin claim)
+  /// to ensure the client picks up the new claims without requiring a full sign-out/in.
+  Future<void> forceTokenRefresh() async {
+    final user = _auth.currentUser;
+    if (user != null) {
+      debugPrint('[AuthSessionProvider.forceTokenRefresh] forcing token refresh for ${user.uid}');
+      await user.getIdToken(true);
+      debugPrint('[AuthSessionProvider.forceTokenRefresh] token refreshed');
+    }
+  }
+
   void _setLoading(bool value) {
     _isLoading = value;
     notifyListeners();

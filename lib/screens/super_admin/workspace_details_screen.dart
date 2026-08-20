@@ -3,8 +3,10 @@ import 'package:intl/intl.dart';
 
 import '../../control_plane/models/workspace.dart';
 import '../../control_plane/models/workspace_status.dart';
+import '../../control_plane/models/workspace_firebase_config.dart';
 import '../../control_plane/services/cross_project_analytics_service.dart';
 import '../../control_plane/services/workspace_registry_service.dart';
+import '../../screens/super_admin/firebase_config_upload_field.dart';
 import '../../theme/app_theme_colors.dart';
 import 'portal_widgets.dart';
 
@@ -50,11 +52,11 @@ class _WorkspaceDetailsScreenState extends State<WorkspaceDetailsScreen> {
     super.initState();
     _loadDetails();
   }
-
-  Future<void> _loadDetails() async {
+Future<void> _loadDetails() async {
     setState(() => _loadingUsers = true);
     try {
       final w = await _registry.resolveById(widget.workspaceId);
+
       final health =
           await _analytics.getWorkspaceHealthScore(widget.workspaceId);
       final login = await _analytics.getLastLoginTime(widget.workspaceId);
@@ -77,6 +79,101 @@ class _WorkspaceDetailsScreenState extends State<WorkspaceDetailsScreen> {
     }
   }
 
+  /// Opens a dialog to edit the workspace's Firebase configuration.
+  Future<void> _editFirebaseConfig(Workspace workspace) async {
+    var currentConfig = workspace.firebaseConfig;
+    var confirmed = false;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              backgroundColor: AppThemeColors.darkCanvas,
+              title: const Text(
+                'Edit Firebase Configuration',
+                style: TextStyle(color: kCoLabel, fontWeight: FontWeight.w800),
+              ),
+              content: SizedBox(
+                width: 600,
+                child: SingleChildScrollView(
+                  child: FirebaseConfigUploadField(
+                    config: currentConfig,
+                    confirmed: confirmed,
+                    enabled: true,
+                    onParsed: (config) {
+                      setDialogState(() => currentConfig = config);
+                    },
+                    onRemove: () {
+                      setDialogState(() => currentConfig = const WorkspaceFirebaseConfig(
+                        apiKey: '',
+                        appId: '',
+                        projectId: '',
+                        messagingSenderId: '',
+                        storageBucket: '',
+                        authDomain: '',
+                      ));
+                    },
+                    onConfirmedChanged: (v) {
+                      setDialogState(() => confirmed = v);
+                    },
+                    errorText: _error,
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancel', style: TextStyle(color: kCoSubtle)),
+                ),
+                FilledButton(
+                  onPressed: (!confirmed || currentConfig.apiKey.trim().isEmpty)
+                      ? null
+                      : () async {
+                          Navigator.of(dialogContext).pop();
+                          await _saveFirebaseConfig(workspace.workspaceId, currentConfig);
+                        },
+                  style: FilledButton.styleFrom(
+                    backgroundColor: kCoAccent,
+                    disabledBackgroundColor: kCoBorder,
+                  ),
+                  child: const Text('Save Configuration',
+                      style: TextStyle(fontWeight: FontWeight.w800)),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  /// Saves the updated Firebase configuration to the workspace registry.
+  Future<void> _saveFirebaseConfig(
+      String workspaceId, WorkspaceFirebaseConfig config) async {
+    try {
+      await _registry.updateFirebaseConfig(workspaceId, config);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: kCoSuccess,
+          content: Text('Firebase configuration updated successfully.'),
+        ),
+      );
+      _loadDetails();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: kCoDanger,
+          content: Text('Failed to update configuration: $e'),
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_workspace == null) {
@@ -95,6 +192,13 @@ class _WorkspaceDetailsScreenState extends State<WorkspaceDetailsScreen> {
           tooltip: 'Back to Workspaces',
           onPressed: () => Navigator.of(context).pop(),
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.edit_outlined),
+            tooltip: 'Edit Firebase Configuration',
+            onPressed: () => _editFirebaseConfig(w),
+          ),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
@@ -127,6 +231,10 @@ class _WorkspaceDetailsScreenState extends State<WorkspaceDetailsScreen> {
   }
 
   Widget _buildCompanyInfoSection(Workspace w) {
+    final hasGcpDisplayName = w.gcpProjectDisplayName != null &&
+        w.gcpProjectDisplayName!.trim().isNotEmpty &&
+        w.gcpProjectDisplayName != w.companyName;
+
     return CoSectionCard(
       title: 'Company',
       subtitle: 'Workspace tenant organization',
@@ -150,6 +258,22 @@ class _WorkspaceDetailsScreenState extends State<WorkspaceDetailsScreen> {
                           fontWeight: FontWeight.w700,
                           fontSize: 15),
                     ),
+                    if (hasGcpDisplayName) ...[
+                      const SizedBox(height: 4),
+                      Row(
+                        children: [
+                          const Icon(Icons.cloud_outlined,
+                              color: kCoSubtle, size: 14),
+                          const SizedBox(width: 4),
+                          Text(
+                            'GCP Project Display Name: ${w.gcpProjectDisplayName}',
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: kCoSubtle, fontSize: 11.5),
+                          ),
+                        ],
+                      ),
+                    ],
                     if (w.adminEmail != null) ...[
                       const SizedBox(height: 4),
                       Text(
@@ -244,6 +368,28 @@ class _WorkspaceDetailsScreenState extends State<WorkspaceDetailsScreen> {
               ],
             ],
           ),
+          if (w.gcpProjectDisplayName != null &&
+              w.gcpProjectDisplayName!.trim().isNotEmpty &&
+              w.gcpProjectDisplayName != w.companyName) ...[
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                const Icon(Icons.cloud_outlined,
+                    color: kCoSubtle, size: 16),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'GCP Display Name: ${w.gcpProjectDisplayName}',
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      color: kCoSubtle,
+                      fontSize: 12.5,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );

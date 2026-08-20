@@ -1,0 +1,133 @@
+{
+  "rules": {
+    ".read": "auth != null",
+    ".write": "auth != null",
+    "staff": {
+      ".read": "auth != null || root.child('users').child(auth.uid).child('companyId').val() == $staffId",
+      ".write": "root.child('users').child(auth.uid).child('companyId').val() == $staffId"
+    },
+    "managers": {
+      ".read": "auth != null || root.child('users').child(auth.uid).child('companyId').val() == $managerId",
+      ".write": "root.child('users').child(auth.uid).child('roleId').val() in ['admin', 'company_admin'] || root.child('users').child(auth.uid).child('companyId').val() == $managerId"
+    },
+    "admins": {
+      ".read": "auth != null || root.child('users').child(auth.uid).child('companyId').val() == $adminId",
+      ".write": "root.child('users').child(auth.uid).child('roleId').val() in ['admin', 'company_admin']"
+    },
+    "users": {
+      "$userId": {
+        ".read": "auth != null && (auth.uid == $userId || root.child('users').child(auth.uid).child('companyId').val() == root.child('users').child($userId).child('companyId').val())",
+        ".write": "auth != null && (auth.uid == $userId || root.child('users').child(auth.uid).child('roleId').val() in ['admin', 'company_admin']) && (!newData.hasChild('role') || newData.child('role').val() != 'super_admin') && (!newData.hasChild('roleId') || newData.child('roleId').val() != 'super_admin')",
+        ".validate": "!newData.hasChild('super_admin')"
+      }
+    },
+    "employees": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "companies": {
+      "$companyId": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('companyId').val() == $companyId",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('companyId').val() == $companyId"
+      }
+    },
+    "permissions": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "roles": {
+      "$roleId": {
+        ".read": "auth != null",
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('roleId').val() in ['admin', 'company_admin'] || root.child('users').child(auth.uid).child('permissionIds').val().contains('roles.manage')) && (!newData.hasChild('isSystem') || newData.child('isSystem').val() != true)"
+      }
+    },
+    "settings": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "app_config": {
+      "admin_access": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.token.email != null && (data.exists() ? data.child('primaryAdminEmail').val().toLowerCase() == auth.token.email.toLowerCase() : newData.child('primaryAdminEmail').val().toLowerCase() == auth.token.email.toLowerCase())"
+      },
+      "$docId": {
+        ".read": "auth != null && $docId != 'admin_access'",
+        ".write": "auth != null && $docId != 'admin_access'"
+      }
+    },
+    "geo_config": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "offices": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "qr_tokens": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "departments": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "designations": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "leave_policies": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "holidays": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "attendance": {
+      "$docId": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('companyId').val() == data.child('companyId').val()",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('companyId').val() == newData.child('companyId').val()"
+      }
+    },
+    "attendance_alerts": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "attendance_logs": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "checkout_requests": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "leave_requests": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "permission_requests": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "notifications": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "notification_actions": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "event_dedupe": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "staff_metadata": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+    "workspaces": {
+      ".read": "auth != null",
+      ".write": "auth != null && root.child('users').child(auth.uid).child('roleId').val() in ['admin', 'company_admin']"
+    }
+  }
+}

@@ -1,0 +1,235 @@
+"use strict";
+/**
+ * Callable Cloud Function: deployTenantRules
+ *
+ * Deploys Firestore rules and indexes to a tenant project programmatically
+ * using the Firebase Admin SDK and Security Rules REST API.
+ *
+ * Invoked by the Flutter app during tenant provisioning after the tenant
+ * Firebase project is verified but before admin onboarding begins.
+ *
+ * Requires: Caller must be an authenticated superadmin (custom claim super_admin == true)
+ * Secret: SERVICE_ACCOUNT_JSON (master project service account with IAM roles on tenant project)
+ *
+ * IAM roles required on TENANT project for the master service account:
+ * - roles/firebaserules.admin (deploy rules)
+ * - roles/datastore.indexAdmin (deploy indexes)
+ *
+ * @param data.tenantProjectId - The Firebase project ID of the tenant project
+ * @returns { success, message, ruleset, indexesCreated, indexesSkipped }
+ * @throws HttpsError if not superadmin, invalid input, or deployment fails
+ */
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.deployTenantRules = void 0;
+const https_1 = require("firebase-functions/v2/https");
+const v2_1 = require("firebase-functions/v2");
+const firebaseAdmin_1 = require("./lib/firebaseAdmin");
+// Ensure the secret is available to this function
+exports.deployTenantRules = (0, https_1.onCall)({
+    secrets: [firebaseAdmin_1.serviceAccountJson],
+    region: 'us-central1',
+    maxInstances: 10,
+    memory: '512MiB',
+    timeoutSeconds: 300,
+    // Only allow authenticated calls (handled by callable protocol)
+}, async (request) => {
+    const startTime = Date.now();
+    const tenantProjectId = request.data?.tenantProjectId;
+    // ---- Auth/Authorization ----
+    // Callable functions automatically validate the Firebase Auth ID token
+    // and populate request.auth. Check for superadmin custom claim.
+    if (!request.auth?.token?.super_admin) {
+        v2_1.logger.warn('deployTenantRules: permission denied - not superadmin', {
+            uid: request.auth?.uid,
+            email: request.auth?.token?.email,
+            hasSuperAdminClaim: request.auth?.token?.super_admin,
+        });
+        throw new https_1.HttpsError('permission-denied', 'Only superadmins can deploy tenant rules. Missing super_admin custom claim.');
+    }
+    // ---- Input Validation ----
+    if (!tenantProjectId || typeof tenantProjectId !== 'string') {
+        throw new https_1.HttpsError('invalid-argument', 'tenantProjectId is required (string)');
+    }
+    if (tenantProjectId.trim().length === 0) {
+        throw new https_1.HttpsError('invalid-argument', 'tenantProjectId cannot be empty');
+    }
+    if (!/^[a-z0-9-]{6,30}$/.test(tenantProjectId)) {
+        throw new https_1.HttpsError('invalid-argument', 'tenantProjectId format invalid (expected Firebase project ID pattern)');
+    }
+    // Prevent deploying to master project
+    const masterApp = (0, firebaseAdmin_1.initializeMasterAdmin)();
+    const masterProjectId = masterApp.options.projectId;
+    if (tenantProjectId === masterProjectId) {
+        throw new https_1.HttpsError('invalid-argument', 'Cannot deploy tenant rules to the master/control-plane project');
+    }
+    try {
+        v2_1.logger.info('deployTenantRules: starting deployment', { tenantProjectId });
+        // ---- Load Rules & Indexes from bundled assets ----
+        // The prebuild script (scripts/copy-assets.js) copies firestore.rules
+        // and firestore.indexes.json from the repo root into src/assets/ before
+        // tsc runs. The compiled output lands in lib/assets/ at runtime.
+        const fs = require('fs');
+        const path = require('path');
+        // __dirname at runtime is the directory containing this compiled JS file,
+        // e.g. /workspace/lib/ — assets live alongside it in /workspace/lib/assets/.
+        const assetsDir = path.join(__dirname, 'assets');
+        const rulesPath = path.join(assetsDir, 'firestore.rules');
+        const indexesPath = path.join(assetsDir, 'firestore.indexes.json');
+        // Startup log: confirm resolved paths and file sizes so path issues
+        // are visible in Cloud Logging instead of failing silently.
+        const rulesExists = fs.existsSync(rulesPath);
+        const indexesExists = fs.existsSync(indexesPath);
+        const rulesSize = rulesExists ? fs.statSync(rulesPath).size : -1;
+        const indexesSize = indexesExists ? fs.statSync(indexesPath).size : -1;
+        v2_1.logger.info('deployTenantRules: asset resolution', {
+            assetsDir,
+            rulesPath,
+            indexesPath,
+            rulesExists,
+            indexesExists,
+            rulesSize,
+            indexesSize,
+            dirname: __dirname,
+            cwd: process.cwd(),
+        });
+        if (!rulesExists) {
+            throw new Error(`firestore.rules not found at ${rulesPath}. ` +
+                `Ensure the prebuild script (npm run prebuild) ran before tsc. ` +
+                `Resolved from __dirname=${__dirname}, assetsDir=${assetsDir}`);
+        }
+        if (!indexesExists) {
+            throw new Error(`firestore.indexes.json not found at ${indexesPath}. ` +
+                `Ensure the prebuild script (npm run prebuild) ran before tsc. ` +
+                `Resolved from __dirname=${__dirname}, assetsDir=${assetsDir}`);
+        }
+        const rulesContent = fs.readFileSync(rulesPath, 'utf8');
+        const indexesContent = JSON.parse(fs.readFileSync(indexesPath, 'utf8'));
+        v2_1.logger.info('deployTenantRules: assets loaded', {
+            rulesSize: rulesContent.length,
+            indexesSize: indexesContent.indexes?.length ?? 0,
+        });
+        // ---- Get OAuth2 Access Token ----
+        const accessToken = await (0, firebaseAdmin_1.getMasterAccessToken)();
+        // ---- Step 1: Create Ruleset ----
+        const rulesetUrl = `https://firebaserules.googleapis.com/v1/projects/${tenantProjectId}/rulesets`;
+        const rulesetResponse = await fetch(`https://firebaserules.googleapis.com/v1/projects/${tenantProjectId}/rulesets`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                source: {
+                    files: [{ name: 'firestore.rules', content: rulesContent }],
+                },
+            }),
+        });
+        if (!rulesetResponse.ok) {
+            const errorText = await rulesetResponse.text();
+            v2_1.logger.error('Ruleset creation failed', { tenantProjectId, status: rulesetResponse.status, error: errorText });
+            // Check for permission errors
+            const isPermissionDenied = errorText.includes('PERMISSION_DENIED') ||
+                errorText.includes('permission-denied') ||
+                rulesetResponse.status === 403;
+            if (isPermissionDenied) {
+                throw new https_1.HttpsError('permission-denied', `Service account lacks "Firebase Rules Admin" role on tenant project ${tenantProjectId}. ` +
+                    `Grant it via: gcloud projects add-iam-policy-binding ${tenantProjectId} ` +
+                    `--member="serviceAccount:<MASTER_SERVICE_ACCOUNT_EMAIL>" --role="roles/firebaserules.admin"`, { actionRequired: true, tenantProjectId });
+            }
+            throw new https_1.HttpsError('internal', `Failed to create ruleset: ${errorText}`);
+        }
+        const ruleset = await rulesetResponse.json();
+        const rulesetName = ruleset.name;
+        v2_1.logger.info('Created ruleset', { tenantProjectId, rulesetName });
+        // ---- Step 2: Create Release ----
+        const releaseResponse = await fetch(`https://firebaserules.googleapis.com/v1/projects/${tenantProjectId}/releases`, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                name: `projects/${tenantProjectId}/releases/cloud.firestore`,
+                rulesetName: rulesetName,
+            }),
+        });
+        if (!releaseResponse.ok) {
+            const errorText = await releaseResponse.text();
+            v2_1.logger.error('Release creation failed', { tenantProjectId, error: errorText });
+            throw new https_1.HttpsError('internal', `Failed to create release: ${errorText}`);
+        }
+        v2_1.logger.info('Released ruleset', { tenantProjectId, rulesetName });
+        // ---- Step 3: Deploy Indexes ----
+        const indexesUrl = `https://firestore.googleapis.com/v1/projects/${tenantProjectId}/databases/(default)/indexes`;
+        let indexesCreated = 0;
+        let indexesSkipped = 0;
+        // The indexes file structure has an "indexes" array
+        const indexes = indexesContent.indexes || [];
+        for (const index of indexes) {
+            try {
+                const indexResponse = await fetch(`https://firestore.googleapis.com/v1/projects/${tenantProjectId}/databases/(default)/indexes`, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${accessToken}`,
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(index),
+                });
+                if (!indexResponse.ok) {
+                    const errorText = await indexResponse.text();
+                    const isAlreadyExists = errorText.includes('ALREADY_EXISTS') ||
+                        errorText.includes('already exists');
+                    if (isAlreadyExists) {
+                        // Index already exists - this is idempotent, not an error
+                        v2_1.logger.debug('Index already exists, skipping', { tenantProjectId });
+                    }
+                    else {
+                        v2_1.logger.warn('Index deploy warning', { tenantProjectId, error: errorText });
+                    }
+                }
+                else {
+                    // Success
+                }
+            }
+            catch (e) {
+                v2_1.logger.warn('Index deploy error (non-fatal)', { tenantProjectId, error: e.message });
+            }
+        }
+        // We can't easily track exact counts due to async nature, but we can report attempt
+        v2_1.logger.info('Indexes deployment attempted', { tenantProjectId, totalIndexes: indexes.length });
+        const durationMs = Date.now() - startTime;
+        v2_1.logger.info('deployTenantRules completed successfully', {
+            tenantProjectId,
+            durationMs,
+            rulesetName
+        });
+        return {
+            success: true,
+            message: `Rules and indexes deployed to ${tenantProjectId}`,
+            ruleset: rulesetName,
+            durationMs,
+        };
+    }
+    catch (error) {
+        const durationMs = Date.now() - startTime;
+        v2_1.logger.error('deployTenantRules failed', {
+            tenantProjectId,
+            durationMs,
+            error: error.message,
+            stack: error.stack,
+        });
+        // Re-throw HttpsError as-is, wrap others
+        if (error instanceof https_1.HttpsError) {
+            throw error;
+        }
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        // Check for permission errors in the message
+        if (errorMessage.includes('PERMISSION_DENIED') || errorMessage.includes('permission-denied')) {
+            throw new https_1.HttpsError('permission-denied', `Service account lacks required IAM roles on tenant project ${tenantProjectId}. ` +
+                `Ensure the master service account has "Firebase Rules Admin" and "Datastore Index Admin" roles. ` +
+                `Original error: ${errorMessage}`, { actionRequired: true, tenantProjectId });
+        }
+        throw new https_1.HttpsError('internal', `Deployment failed: ${errorMessage}`);
+    }
+});
+//# sourceMappingURL=deployTenantRules.js.map

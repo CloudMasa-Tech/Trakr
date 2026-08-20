@@ -80,15 +80,37 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
   }
 
   Future<void> _deleteWorkspace(Workspace workspace) async {
-    final confirmed = await _confirm(
+    // First confirmation - basic intent
+    final firstConfirmed = await _confirm(
       title: 'Delete ${workspace.companyName}?',
-      message: 'This permanently deletes the workspace and all of its data — '
-          'employees, managers, attendance records, leave requests, QR tokens '
-          'and stored files. This cannot be undone.',
-      confirmLabel: 'Delete',
+      message: 'This will permanently delete the workspace and ALL its data — '
+          'employees, managers, attendance records, leave requests, QR tokens, '
+          'stored files, and the entire Firebase/GCP project. '
+          'This action is IRREVERSIBLE and cannot be undone.',
+      confirmLabel: 'I understand, proceed',
       destructive: true,
     );
-    if (!confirmed || !mounted) return;
+    if (!firstConfirmed || !mounted) return;
+
+    // Second confirmation - require typing DELETE
+    final secondConfirmed = await _confirmDeleteDialog(workspace);
+    if (!secondConfirmed || !mounted) return;
+
+    // Third confirmation - final warning
+    final thirdConfirmed = await _confirm(
+      title: 'FINAL CONFIRMATION',
+      message: 'This will IMMEDIATELY and PERMANENTLY:\n'
+          '• Delete the Firebase/GCP project (${workspace.firebaseConfig.projectId})\n'
+          '• Delete all workspace data in Firestore\n'
+          '• Delete the project allocation\n'
+          '• Block this Project ID for 30 days (Google grace period)\n\n'
+          'Type "DELETE" to confirm you understand this is irreversible.',
+      confirmLabel: 'DELETE',
+      destructive: true,
+      requireTextInput: 'DELETE',
+    );
+    if (!thirdConfirmed || !mounted) return;
+
     try {
       final report = await _deletion.deleteWorkspace(workspace);
       await _platform.recordActivity(
@@ -112,6 +134,83 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
     }
   }
 
+  /// Shows a confirmation dialog that requires typing "DELETE" to proceed
+  Future<bool> _confirmDeleteDialog(Workspace workspace) async {
+    final controller = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    
+    return await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text(
+          'Confirm Deletion',
+          style: TextStyle(color: Colors.red, fontWeight: FontWeight.w800),
+        ),
+        content: Form(
+          key: formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'This will permanently delete the Firebase/GCP project:\n'
+                '${workspace.firebaseConfig.projectId}\n\n'
+                'And all associated data. This cannot be undone.\n\n'
+                'The project ID will be blocked for 30 days '
+                '(Google grace period).',
+                style: const TextStyle(fontSize: 14),
+              ),
+              const SizedBox(height: 16),
+              const Text(
+                'Type "DELETE" to confirm:',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 14,
+                  color: Colors.red,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: controller,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'DELETE',
+                  hintText: 'Type DELETE to confirm',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  if (value != 'DELETE') {
+                    return 'You must type exactly "DELETE"';
+                  }
+                  return null;
+                },
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState?.validate() ?? false) {
+                Navigator.of(context).pop(true);
+              }
+            },
+            style: FilledButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+            child: const Text('DELETE'),
+          ),
+        ],
+      ),
+    ) ?? false;
+  }
+
   List<Workspace> _filtered(List<Workspace> workspaces) {
     final query = _searchCtrl.text.trim().toLowerCase();
     return workspaces.where((w) {
@@ -131,8 +230,83 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
     required String message,
     required String confirmLabel,
     bool destructive = false,
+    String? requireTextInput,
   }) async {
     final color = destructive ? kCoRed : kCoAccent;
+    
+    if (requireTextInput != null) {
+      final controller = TextEditingController();
+      final formKey = GlobalKey<FormState>();
+      
+      final result = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (dialogContext) => AlertDialog(
+          backgroundColor: AppThemeColors.darkSurface,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(18),
+            side: const BorderSide(color: kCoBorder),
+          ),
+          title: Text(title,
+              style: const TextStyle(
+                  color: Colors.red, fontWeight: FontWeight.w800, fontSize: 17)),
+          content: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(message,
+                    style:
+                        const TextStyle(color: kCoSubtle, fontSize: 14, height: 1.5)),
+                const SizedBox(height: 16),
+                Text(
+                  'Type "$requireTextInput" to confirm:',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 14,
+                    color: Colors.red,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                TextFormField(
+                  controller: controller,
+                  autofocus: true,
+                  decoration: const InputDecoration(
+                    labelText: 'DELETE',
+                    hintText: 'Type DELETE to confirm',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) {
+                    if (value != requireTextInput) {
+                      return 'You must type exactly "$requireTextInput"';
+                    }
+                    return null;
+                  },
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel', style: TextStyle(color: kCoSubtle)),
+            ),
+            FilledButton(
+              onPressed: () {
+                if (formKey.currentState?.validate() ?? false) {
+                  Navigator.of(dialogContext).pop(true);
+                }
+              },
+              style: FilledButton.styleFrom(backgroundColor: Colors.red),
+              child: Text(requireTextInput),
+            ),
+          ],
+        ),
+      );
+      return result == true;
+    }
+    
     final result = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -219,7 +393,7 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
                   const SizedBox(height: 20),
                   _buildToolbar(loading),
                   const SizedBox(height: 14),
-                  _buildTable(pageWorkspaces, filtered.length, loading),
+                  _buildTable(pageWorkspaces, filtered, loading),
                 ],
               );
             },
@@ -307,17 +481,17 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
     );
   }
 
-  Widget _buildTable(List<Workspace> workspaces, int total, bool loading) {
+  Widget _buildTable(List<Workspace> pageWorkspaces, List<Workspace> allFilteredWorkspaces, bool loading) {
     return CoSectionCard(
       title: 'All workspaces',
       subtitle: loading
           ? 'Loading workspace directory…'
-          : 'Showing ${workspaces.length} of $total workspaces.',
+          : 'Showing ${pageWorkspaces.length} of ${allFilteredWorkspaces.length} workspaces.',
       icon: Icons.apartment_rounded,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (loading && workspaces.isEmpty)
+          if (loading && pageWorkspaces.isEmpty)
             const Padding(
               padding: EdgeInsets.all(20),
               child: Center(
@@ -329,31 +503,39 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
                 ),
               ),
             )
-          else if (workspaces.isEmpty)
+else if (pageWorkspaces.isEmpty)
             const CoEmptyState(
               icon: Icons.business_center_outlined,
               message: 'No workspaces found.',
             )
           else
-            _workspaceTable(workspaces),
-          if (!loading && total > _pageSize)
-            CoPaginationBar(
-              page: _page,
-              pageSize: _pageSize,
-              totalItems: total,
-              canNext: (_page + 1) * _pageSize < total,
-              onPageChanged: (p) => setState(() => _page = p),
-            ),
+            _workspaceTable(pageWorkspaces, allFilteredWorkspaces),
+        if (!loading && allFilteredWorkspaces.length > _pageSize)
+          CoPaginationBar(
+            page: _page,
+            pageSize: _pageSize,
+            totalItems: allFilteredWorkspaces.length,
+            canNext: (_page + 1) * _pageSize < allFilteredWorkspaces.length,
+            onPageChanged: (p) => setState(() => _page = p),
+          ),
         ],
       ),
     );
   }
 
-  Widget _workspaceTable(List<Workspace> workspaces) {
+  Widget _workspaceTable(List<Workspace> pageWorkspaces, List<Workspace> allWorkspaces) {
     const labelStyle =
         TextStyle(color: kCoSubtle, fontSize: 11, fontWeight: FontWeight.w700);
+    // Check if ANY workspace (across all pages) is unverified to show a warning banner.
+    // Exclude workspaces still being provisioned (configuring) or not yet started (pending)
+    // since those haven't had a chance to complete GCP verification yet.
+    final hasUnverified = allWorkspaces.any((w) =>
+        !w.gcpProjectVerified &&
+        w.onboardingStatus != WorkspaceOnboardingStatus.configuring &&
+        w.onboardingStatus != WorkspaceOnboardingStatus.pending);
     return Column(
       children: [
+        if (hasUnverified) _buildUnverifiedWarningBanner(allWorkspaces),
         const Divider(color: kCoBorder, height: 1),
         const Padding(
           padding: EdgeInsets.symmetric(vertical: 10),
@@ -361,6 +543,7 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
             children: [
               Expanded(flex: 3, child: Text('WORKSPACE', style: labelStyle)),
               Expanded(flex: 2, child: Text('PROJECT ID', style: labelStyle)),
+              Expanded(flex: 1, child: Text('GCP VERIFIED', style: labelStyle)),
               Expanded(flex: 1, child: Text('HEALTH', style: labelStyle)),
               Expanded(flex: 1, child: Text('PLAN', style: labelStyle)),
               Expanded(flex: 1, child: Text('STATUS', style: labelStyle)),
@@ -369,17 +552,123 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
           ),
         ),
         const Divider(color: kCoBorder, height: 1),
-        for (var i = 0; i < workspaces.length; i++) ...[
+        for (var i = 0; i < pageWorkspaces.length; i++) ...[
           if (i > 0) const Divider(color: kCoBorder, height: 1),
-          _tableRow(workspaces[i]),
+          _tableRow(pageWorkspaces[i]),
         ],
       ],
     );
   }
 
-  Widget _tableRow(Workspace workspace) {
-    final health = _healthScores[workspace.workspaceId] ?? 0;
+  Widget _buildUnverifiedWarningBanner(List<Workspace> workspaces) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: kCoAmber.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: kCoAmber.withValues(alpha: 0.4)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, color: kCoAmber, size: 20),
+          const SizedBox(width: 12),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Unverified GCP Projects Detected',
+                  style: TextStyle(
+                    color: kCoAmber,
+                    fontWeight: FontWeight.w800,
+                    fontSize: 13.5,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'One or more workspaces are missing GCP project verification. '
+                  'This means the workspace record exists in Firestore but the corresponding '
+                  'GCP project was never confirmed as created. These "phantom" workspaces '
+                  'may cause issues if used. Run the cleanup script to identify and resolve them.',
+                  style: TextStyle(color: kCoSubtle, fontSize: 11.5, height: 1.4),
+                ),
+              ],
+            ),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: kCoAmber,
+              foregroundColor: kCoWhite,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            ),
+            onPressed: () => _showUnverifiedDetails(workspaces),
+            child: const Text('View Details', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 12)),
+          ),
+        ],
+      ),
+    );
+  }
 
+  void _showUnverifiedDetails(List<Workspace> workspaces) {
+    final unverified = workspaces.where((w) => !w.gcpProjectVerified).toList();
+    showDialog(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppThemeColors.darkSurface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: const BorderSide(color: kCoBorder),
+        ),
+        title: const Text(
+          'Unverified Workspaces',
+          style: TextStyle(color: kCoLabel, fontWeight: FontWeight.w800),
+        ),
+        content: SizedBox(
+          width: 600,
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: unverified.length,
+            separatorBuilder: (_, __) => const Divider(color: kCoBorder),
+            itemBuilder: (_, index) {
+              final w = unverified[index];
+              return ListTile(
+                dense: true,
+                leading: CoCompanyAvatar(name: w.companyName, logoUrl: null, size: 30),
+                title: Text(w.companyName, style: const TextStyle(color: kCoLabel, fontWeight: FontWeight.w700)),
+                subtitle: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Code: ${w.workspaceCode}', style: const TextStyle(color: kCoSubtle, fontSize: 11)),
+                    Text('Project ID: ${w.firebaseProjectId}', style: const TextStyle(color: kCoSubtle, fontSize: 11)),
+                    if (w.gcpProjectDisplayName != null && w.gcpProjectDisplayName!.isNotEmpty)
+                      Text('GCP Display Name: ${w.gcpProjectDisplayName}', style: const TextStyle(color: kCoSubtle, fontSize: 11)),
+                    const Text('GCP Project Verified: NO', style: TextStyle(color: kCoRed, fontSize: 11, fontWeight: FontWeight.w700)),
+                  ],
+                ),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Close', style: TextStyle(color: kCoSubtle)),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: kCoAccent),
+            onPressed: () {
+              Navigator.of(dialogContext).pop();
+              // TODO: Could add a "Run cleanup" action here
+            },
+            child: const Text('Run Cleanup Script', style: TextStyle(fontWeight: FontWeight.w700)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _tableRow(Workspace workspace) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
@@ -442,22 +731,28 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
           ),
           Expanded(
             flex: 1,
-            child: Row(
-              children: [
-                Icon(Icons.favorite_rounded,
-                    color: health > 90
-                        ? kCoGreen
-                        : (health > 70 ? kCoAmber : kCoRed),
-                    size: 14),
-                const SizedBox(width: 4),
-                Text(
-                  health > 0 ? '$health/100' : '...',
-                  style: const TextStyle(
-                      color: kCoLabel,
-                      fontSize: 12.5,
-                      fontWeight: FontWeight.w700),
-                ),
-              ],
+            child: Center(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    workspace.gcpProjectVerified
+                        ? Icons.verified_rounded
+                        : Icons.warning_amber_rounded,
+                    color: workspace.gcpProjectVerified ? kCoGreen : kCoAmber,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    workspace.gcpProjectVerified ? 'Verified' : 'Unverified',
+                    style: TextStyle(
+                      color: workspace.gcpProjectVerified ? kCoGreen : kCoAmber,
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
           Expanded(

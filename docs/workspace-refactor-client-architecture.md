@@ -1,7 +1,7 @@
 # Client-Side Architecture: Multi-Tenant Workspace Refactor
 
 **App:** `attendqr` (Flutter 3.44.2 / Dart 3.12.2, Provider, Firebase)
-**Scope:** This document is the CLIENT implementation plan only. Vercel serverless endpoints / Firestore rules / Storage rules changes are called out as coordination points, not designed here.
+**Scope:** This document is the CLIENT implementation plan only. Firebase Cloud Functions (Gen 2) / Firestore rules / Storage rules changes are called out as coordination points, not designed here.
 **Status:** Design v1
 
 ---
@@ -661,7 +661,7 @@ Role resolution remains on global `users` (then global `staff`/`managers`/`admin
 
 ### 6.4 `qr_tokens` tenantId → companyId
 
-In `attendance_service.dart` the QR token APIs take a `tenantId` that callers fill with the **admin's auth uid** (`:1905-1966`, `getQrTokenStream`, `markAttendance`). Phase 2: change the parameter name/semantics to `companyId` everywhere and key `companies/{c}/qr_tokens/{companyId}`. `staff_scan_qr_screen` and the client-side `AttendanceService.markAttendance` pass `WorkspaceScope.instance.requireCompanyId()`. **Coordinate with the Vercel cron `qrNotifications.js`** (rotates by tenant in `qr_tokens`) — it must read the same key.
+In `attendance_service.dart` the QR token APIs take a `tenantId` that callers fill with the **admin's auth uid** (`:1905-1966`, `getQrTokenStream`, `markAttendance`). Phase 2: change the parameter name/semantics to `companyId` everywhere and key `companies/{c}/qr_tokens/{companyId}`. `staff_scan_qr_screen` and the client-side `AttendanceService.markAttendance` pass `WorkspaceScope.instance.requireCompanyId()`. **Coordinate with the Cloud Function cron `qrNotifications` (rotates by tenant in `qr_tokens`) — it must read the same key.
 
 ### 6.5 Storage
 
@@ -749,8 +749,14 @@ Two simultaneous onboardings of the same name both find `slug` free. The `slugs/
 ### 8.8 Path strategy + hosting rewrite
 `firebase.json` already rewrites `** → /index.html`, so `usePathUrlStrategy()` works in production. Dev (`flutter run -d chrome`) also serves paths fine with the same call. Trap: **firebase auth / google sign-in redirect URIs** are host-dependent — after adopting path URLs, ensure the Firebase console authorized domains include the deployed host, or `signInWithPopup` breaks on the new domain.
 
-### 8.9 Backend coupling (Vercel serverless, no Cloud Functions)
-This project runs on the Firebase **Spark plan** — Cloud Functions are removed. All server-side logic lives in `vercel_backend/api/` (`sendNotification.js`, `notificationAction.js`, `broadcastNotification.js`, `qrNotifications.js`, `syncMissedCheckout.js`, `attendanceReminders.js`). These target **top-level collections** (`notifications`, `qr_tokens`, `checkout_requests`, `attendance`). Phase 2 moves these under `companies/{c}/…` — the Vercel endpoints must be updated to match the new paths and the tenant→companyId key change, in the **same release** as step 2.6, or push notifications/QR rotation silently die. Client-only change is never enough here.
+### 8.9 Backend coupling (Firebase Cloud Functions Gen 2)
+This project runs on the Firebase **Blaze plan** with Cloud Functions (Gen 2, TypeScript). Server-side logic lives in `functions/src/`:
+- `deployTenantRules` — callable; deploys rules/indexes to tenant projects during provisioning
+- `setSuperAdminClaim` — callable; sets `super_admin` custom claim
+- `sendNotification`, `notificationAction`, `broadcastNotification`, `sendCredentialEmail` — migrated from former Vercel endpoints
+- Cron functions (Gen 2 scheduled) for `qrNotifications`, `syncMissedCheckout`, `attendanceReminders`
+
+These target **scoped collections** under `companies/{companyId}/…` (see §6.2). Phase 2 moves these under `companies/{c}/…` — the Cloud Functions must be updated to match the new paths and the tenant→companyId key change, in the **same release** as step 2.6, or push notifications/QR rotation silently die. Client-only change is never enough here.
 
 ### 8.10 attendance_service (3990 lines) and no test suite
 The only real tests after Phase 1 are `slugify`/`firestore_paths`. For `attendance_service` keep edits **mechanical path substitutions**, never refactor query semantics in the same diff; verify each touched method via its manual flow (check-in, temp-exit, re-entry, checkout, weekly/monthly streams, missed-checkout sync) and keep `tenantId→companyId` and deterministic id logic byte-identical apart from the key change. Add `test/attendance_paths_test.dart` asserting the new doc paths before touching the big file.

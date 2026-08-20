@@ -9,25 +9,24 @@ import 'tenant_defaults.dart';
 /// What a single atomic tenant seed batch wrote, so a failed provisioning run
 /// can remove it again (best-effort, in reverse order).
 class TenantSeedResult {
-  TenantSeedResult(this.documentReferences, {Set<String>? preExisting})
+  TenantSeedResult(this.documentPaths, {Set<String>? preExisting})
       : preExisting = preExisting ?? const <String>{};
 
-  /// Every document reference created by the seed batch, in write order.
-  final List<DocumentReference<Map<String, dynamic>>> documentReferences;
+  /// Every document path created by the seed batch, in write order.
+  final List<String> documentPaths;
 
   /// Document paths (e.g. `settings/white_label`) that already existed before
   /// the seed ran — typically leftovers of a crashed earlier provisioning run.
-  /// A rollback must NOT delete these; it only removes docs this run created.
+  /// A rollback must NOT delete these; it only removes documents this run created.
   final Set<String> preExisting;
 }
 
 /// Seeds a freshly-provisioned tenant (data plane) project with all the
 /// defaults the app needs to work out of the box.
 ///
-/// Everything is written through one [WriteBatch] so the seed either lands
-/// completely or not at all — the tenant never sees a half-initialized project.
+/// Everything is written through individual set() calls to Cloud Firestore.
 /// The [companyId]/[adminUid] must already exist (created by
-/// [CompanyService.onboardCompany]) before this runs.
+/// [TenantProvisioner.provision]) before this runs.
 class TenantSeeder {
   TenantSeeder({required FirebaseContext context}) : _context = context;
 
@@ -43,14 +42,13 @@ class TenantSeeder {
     String? supportEmail,
   }) async {
     final db = _context.firestore;
-    final now = FieldValue.serverTimestamp();
-    final created = <DocumentReference<Map<String, dynamic>>>[];
-    final batch = db.batch();
+    final created = <String>[];
+    final dataMap = <String, Map<String, dynamic>>{};
 
     void add(String path, Map<String, dynamic> data) {
-      final ref = db.doc(path);
-      batch.set(ref, data, SetOptions(merge: true));
-      created.add(ref);
+      db.doc(path);
+      created.add(path);
+      dataMap[path] = data;
     }
 
     final geoConfig = <String, dynamic>{
@@ -64,7 +62,7 @@ class TenantSeeder {
       'checkOutStart': kTenantDefaultCheckOutStart,
       'checkOutEnd': kTenantDefaultCheckOutEnd,
       ...kTenantDefaultHolidayCalendar,
-      'updatedAt': now,
+      'updatedAt': FieldValue.serverTimestamp(),
     };
 
     // Company profile branding consumed by WhiteLabelProvider.
@@ -72,18 +70,17 @@ class TenantSeeder {
       'companyName': companyName,
       'primaryColorHex': kTenantDefaultPrimaryColorHex,
       'supportEmail': supportEmail ?? adminEmail,
-      'updatedAt': now,
+      'updatedAt': FieldValue.serverTimestamp(),
     });
 
     // Admin email whitelist consumed during sign-in (app_config/admin_access).
     add('app_config/admin_access', <String, dynamic>{
       'primaryAdminEmail': adminEmail,
       'adminEmails': <String>[adminEmail],
-      'updatedAt': now,
+      'updatedAt': FieldValue.serverTimestamp(),
     });
 
-    // Attendance settings + office geofence, mirrored like the geo-tag screen
-    // keeps them so every scanner/leave path resolves the same location.
+    // Attendance settings + office geofence.
     add('geo_config/default', geoConfig);
     add('offices/default', geoConfig);
 
@@ -92,9 +89,9 @@ class TenantSeeder {
         DateTime.now().add(const Duration(days: _qrTokenValidForDays));
     add('qr_tokens/$companyId', <String, dynamic>{
       'token': _generateSecureToken(),
-      'expiresAt': Timestamp.fromDate(expiresAt),
-      'createdAt': now,
-      'refreshedAt': now,
+      'expiresAt': expiresAt.millisecondsSinceEpoch,
+      'createdAt': FieldValue.serverTimestamp(),
+      'refreshedAt': FieldValue.serverTimestamp(),
       'tenantId': companyId,
       'geoFenceRadius': kTenantDefaultGeoFenceRadius,
       'validForDays': _qrTokenValidForDays,
@@ -108,8 +105,8 @@ class TenantSeeder {
         'name': name,
         'slug': slug,
         'isActive': true,
-        'createdAt': now,
-        'updatedAt': now,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
       });
     }
 
@@ -121,8 +118,8 @@ class TenantSeeder {
         'slug': slug,
         'isActive': true,
         'companyId': companyId,
-        'createdAt': now,
-        'updatedAt': now,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
       });
     }
 
@@ -133,18 +130,18 @@ class TenantSeeder {
         'monthlyLeaveAllowance': policy['monthlyLeaveAllowance'],
         'isDefault': policy['isDefault'],
         'isActive': policy['isActive'],
-        'createdAt': now,
-        'updatedAt': now,
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
       });
     }
 
-    // Holiday calendar catalog (mirrors geo_config/default).
+    // Holiday calendar catalog.
     add('holidays/default', <String, dynamic>{
       'name': 'Default Holiday Calendar',
       ...kTenantDefaultHolidayCalendar,
       'isActive': true,
-      'createdAt': now,
-      'updatedAt': now,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
     });
 
     // Roles/permissions: seed the catalog plus the protected system roles and
@@ -170,8 +167,8 @@ class TenantSeeder {
       'isSystem': true,
       'isManagerial': true,
       'companyId': companyId,
-      'createdAt': now,
-      'updatedAt': now,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
     });
     add('roles/manager', <String, dynamic>{
       'name': 'Manager',
@@ -192,8 +189,8 @@ class TenantSeeder {
       'isSystem': false,
       'isManagerial': true,
       'companyId': companyId,
-      'createdAt': now,
-      'updatedAt': now,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
     });
     add('roles/employee', <String, dynamic>{
       'name': 'Employee',
@@ -207,8 +204,8 @@ class TenantSeeder {
       'isSystem': false,
       'isManagerial': false,
       'companyId': companyId,
-      'createdAt': now,
-      'updatedAt': now,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
     });
     add('roles/hr', <String, dynamic>{
       'name': 'HR',
@@ -236,8 +233,8 @@ class TenantSeeder {
       'isSystem': false,
       'isManagerial': false,
       'companyId': companyId,
-      'createdAt': now,
-      'updatedAt': now,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
     });
     add('roles/payroll_admin', <String, dynamic>{
       'name': 'Payroll Admin',
@@ -254,30 +251,30 @@ class TenantSeeder {
       'isSystem': false,
       'isManagerial': false,
       'companyId': companyId,
-      'createdAt': now,
-      'updatedAt': now,
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
     });
-
-    // The Company Admin's `users` and `admins` documents (roleId + full
-    // permission set) are written by TenantProvisioner before this batch runs,
-    // so they are not re-written here. Batched writes cannot see each other
-    // during rules evaluation, which is exactly why the admin's direct
-    // permissionIds must exist before the `roles/*` creates below.
 
     // Probe which documents already exist (left over from a crashed earlier
     // run) so rollback is conservative and never deletes them.
     final preExisting = <String>{};
     try {
-      final snapshots = await Future.wait(created.map((ref) => ref.get()));
+      final snapshots = await Future.wait(created.map((path) => _context.firestore.doc(path).get()));
       for (var i = 0; i < created.length; i++) {
-        if (snapshots[i].exists) preExisting.add(created[i].path);
+        if (snapshots[i].exists) preExisting.add(created[i]);
       }
     } catch (_) {
       // Under locked/default rules the probe reads are denied; treat every
-      // document as new so rollback remains best-effort and harmless.
+      // node as new so rollback remains best-effort and harmless.
     }
 
+    // Commit all writes using a batch
+    final batch = _context.firestore.batch();
+    for (final path in created) {
+      batch.set(_context.firestore.doc(path), dataMap[path]!);
+    }
     await batch.commit();
+
     return TenantSeedResult(created, preExisting: preExisting);
   }
 
@@ -286,15 +283,17 @@ class TenantSeeder {
   /// Only documents that did NOT pre-exist are deleted — retrying a partially
   /// provisioned tenant can never wipe data left behind by an earlier run.
   Future<void> rollback(TenantSeedResult result) async {
-    for (final ref in result.documentReferences.reversed) {
-      if (result.preExisting.contains(ref.path)) continue;
+    final batch = _context.firestore.batch();
+    for (final path in result.documentPaths.reversed) {
+      if (result.preExisting.contains(path)) continue;
       try {
-        await ref.delete();
+        batch.delete(_context.firestore.doc(path));
       } catch (_) {
         // Deletion is best-effort; the orchestrator's registry/allocation
         // handling continues regardless.
       }
     }
+    await batch.commit();
   }
 
   String _generateSecureToken() {

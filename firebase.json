@@ -1,1 +1,64 @@
-{"firestore":{"rules":"firestore.rules","indexes":"firestore.indexes.json"},"hosting":{"public":"build/web","ignore":["firebase.json","**/.*","**/node_modules/**"],"headers":[{"source":"**/*.html","headers":[{"key":"Content-Type","value":"text/html; charset=utf-8"},{"key":"X-Content-Type-Options","value":"nosniff"},{"key":"Content-Security-Policy","value":"frame-ancestors 'self'"}]},{"source":"**/*.@(css|js|mjs|json|webmanifest|txt|svg)","headers":[{"key":"X-Content-Type-Options","value":"nosniff"},{"key":"Content-Security-Policy","value":"frame-ancestors 'self'"}]},{"source":"**/*.wasm","headers":[{"key":"Content-Type","value":"application/wasm"},{"key":"X-Content-Type-Options","value":"nosniff"},{"key":"Content-Security-Policy","value":"frame-ancestors 'self'"}]}],"rewrites":[{"source":"**","destination":"/index.html"}]},"flutter":{"platforms":{"android":{"default":{"projectId":"trakradminsetup-28437","appId":"1:6848613159:android:d86d0ba6fd6a190e137702","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"trakradminsetup-28437","configurations":{"android":"1:6848613159:android:d86d0ba6fd6a190e137702","ios":"1:6848613159:ios:6b71e30dd1c4eb98137702","macos":"1:6848613159:ios:6b71e30dd1c4eb98137702","web":"1:6848613159:web:3250e45472fa6762137702","windows":"1:6848613159:web:621bd8a599b61a65137702"}}}}}}
+{
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  },
+  "hosting": {
+    "public": "build/web",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "headers": [
+      {
+        "source": "**/*.html",
+        "headers": [
+          { "key": "Content-Type", "value": "text/html; charset=utf-8" },
+          { "key": "X-Content-Type-Options", "value": "nosniff" },
+          { "key": "Content-Security-Policy", "value": "frame-ancestors 'self'" }
+        ]
+      },
+      {
+        "source": "**/*.@(css|js|mjs|json|webmanifest|txt|svg)",
+        "headers": [
+          { "key": "X-Content-Type-Options", "value": "nosniff" },
+          { "key": "Content-Security-Policy", "value": "frame-ancestors 'self'" }
+        ]
+      },
+      {
+        "source": "**/*.wasm",
+        "headers": [
+          { "key": "Content-Type", "value": "application/wasm" },
+          { "key": "X-Content-Type-Options", "value": "nosniff" },
+          { "key": "Content-Security-Policy", "value": "frame-ancestors 'self'" }
+        ]
+      }
+    ],
+    "rewrites": [{ "source": "**", "destination": "/index.html" }]
+  },
+  "functions": {
+    "source": "functions",
+    "predeploy": ["npm --prefix functions run build"],
+    "runtime": "nodejs20"
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "trakradminsetup-28437",
+          "appId": "1:6848613159:android:d86d0ba6fd6a190e137702",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "trakradminsetup-28437",
+          "configurations": {
+            "android": "1:6848613159:android:d86d0ba6fd6a190e137702",
+            "ios": "1:6848613159:ios:6b71e30dd1c4eb98137702",
+            "macos": "1:68486159:ios:6b71e30dd1c4eb98137702",
+            "web": "1:6848613159:web:3250e45472fa6762137702",
+            "windows": "1:6848613159:web:621bd8a599b61a65137702"
+          }
+        }
+      }
+    }
+  }
+}
