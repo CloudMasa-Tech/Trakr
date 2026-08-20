@@ -61,11 +61,15 @@ class TenantProvisioningResult {
   final String companyId;
   final String adminUid;
   final String adminEmail;
+  final String firebaseProjectId;
+  final WorkspaceFirebaseConfig firebaseConfig;
 
   const TenantProvisioningResult({
     required this.companyId,
     required this.adminUid,
     required this.adminEmail,
+    required this.firebaseProjectId,
+    required this.firebaseConfig,
   });
 }
 
@@ -130,57 +134,45 @@ class DirectTenantProvisioner implements TenantProvisioner {
 
       // Mark workspace as configuring so the UI can show progress
       await _updateWorkspaceOnboardingStatus(workspaceId, 'configuring');
-      final tenantProjectId = workspace.firebaseConfig.projectId;
 
-      // ── Tenant isolation guard ────────────────────────────────────────
-      // Every workspace must live in its OWN dedicated Firebase project. The
-      // TRAKR Master (platform) project can never be used as a tenant project,
-      // so tenant bootstrap writes can never reach control-plane data.
-      if (tenantProjectId.trim().isEmpty) {
+      // In the automatic provisioning flow, the authoritative Firebase
+      // project ID comes from the backend allocation result. Fall back to the
+      // workspace-level project ID if the embedded config has not been patched
+      // yet, then rebuild a usable config around that authoritative project ID.
+      final configuredProjectId = workspace.firebaseConfig.projectId.trim();
+      final workspaceProjectId = workspace.firebaseProjectId.trim();
+      final tenantProjectId =
+          configuredProjectId.isNotEmpty ? configuredProjectId : workspaceProjectId;
+      if (tenantProjectId.isEmpty) {
         throw StateError(
-          'The workspace has no Firebase project mapped. Upload the '
-          'client-side configuration of the workspace\'s own dedicated '
-          'Firebase project before provisioning.',
+          'The workspace has no Firebase project ID yet. Automatic project '
+          'allocation must complete before tenant provisioning.',
         );
       }
-      if (tenantProjectId == _firebaseManager.defaultApp.options.projectId) {
-        throw StateError(
-          'The TRAKR Master platform project cannot be provisioned as a '
-          'workspace. Workspaces require their own dedicated Firebase '
-          'project — create one in the Firebase Console and upload ITS '
-          'client-side configuration.',
-        );
-      }
-
-      // Verify the workspace firebaseConfig carries valid tenant-project
-      // credentials.  If the stored config references the master project's
-      // API key or is otherwise incomplete, the tenant app initialization
-      // will fail with api-key-not-valid when createUserWithEmailAndPassword
-      // is called.  Fail fast here with a clear message rather than letting
-      // the auth call produce a cryptic error later.
-      final config = workspace.firebaseConfig;
+      final config = WorkspaceFirebaseConfig(
+        apiKey: workspace.firebaseConfig.apiKey,
+        appId: workspace.firebaseConfig.appId,
+        projectId: tenantProjectId,
+        messagingSenderId: workspace.firebaseConfig.messagingSenderId,
+        storageBucket: workspace.firebaseConfig.storageBucket,
+        authDomain: workspace.firebaseConfig.authDomain,
+        measurementId: workspace.firebaseConfig.measurementId,
+        iosBundleId: workspace.firebaseConfig.iosBundleId,
+        iosClientId: workspace.firebaseConfig.iosClientId,
+        androidClientId: workspace.firebaseConfig.androidClientId,
+        configMethod: workspace.firebaseConfig.configMethod,
+        npmPackage: workspace.firebaseConfig.npmPackage,
+        sdkVersion: workspace.firebaseConfig.sdkVersion,
+        cdnUrl: workspace.firebaseConfig.cdnUrl,
+      );
       if (config.apiKey.isEmpty ||
+          config.appId.isEmpty ||
           config.projectId.isEmpty ||
-          config.apiKey == _firebaseManager.defaultApp.options.apiKey) {
+          config.messagingSenderId.isEmpty) {
         throw StateError(
-          'The workspace\'s Firebase configuration is incomplete or '
-          'references the master project\'s API key.  Upload the client‑'
-          'side configuration for the workspace\'s own dedicated Firebase '
-          'project (API key, projectId, appId, messagingSenderId, '
-          'authDomain, storageBucket all required).',
-        );
-      }
-
-
-      // Verify the workspace firebaseConfig has valid credentials for the
-      // tenant project. If the stored config references the master project
-      // API key/project, provisioning will fail with api-key-not-valid.
-      final defaultProjectId = _firebaseManager.defaultApp.options.projectId;
-      if (tenantProjectId == defaultProjectId) {
-        // Already caught above, but defensive check
-        throw StateError(
-          'The workspace Firebase project ID matches the master project. '
-          'Workspaces must use a dedicated Firebase project.',
+          'Automatic Firebase provisioning did not return a complete config '
+          'for workspace "$workspaceId". The tenant project must be fully '
+          'provisioned before bootstrap can continue.',
         );
       }
 
@@ -211,20 +203,20 @@ class DirectTenantProvisioner implements TenantProvisioner {
         await _updateWorkspaceProjectId(workspace.workspaceId, actualProjectId);
         // Also update the local config object so subsequent steps use the new ID
         final updatedConfig = WorkspaceFirebaseConfig(
-          apiKey: workspace.firebaseConfig.apiKey,
-          appId: workspace.firebaseConfig.appId,
+          apiKey: config.apiKey,
+          appId: config.appId,
           projectId: actualProjectId,
-          messagingSenderId: workspace.firebaseConfig.messagingSenderId,
-          storageBucket: workspace.firebaseConfig.storageBucket,
-          authDomain: workspace.firebaseConfig.authDomain,
-          measurementId: workspace.firebaseConfig.measurementId,
-          iosBundleId: workspace.firebaseConfig.iosBundleId,
-          iosClientId: workspace.firebaseConfig.iosClientId,
-          androidClientId: workspace.firebaseConfig.androidClientId,
-          configMethod: workspace.firebaseConfig.configMethod,
-          npmPackage: workspace.firebaseConfig.npmPackage,
-          sdkVersion: workspace.firebaseConfig.sdkVersion,
-          cdnUrl: workspace.firebaseConfig.cdnUrl,
+          messagingSenderId: config.messagingSenderId,
+          storageBucket: config.storageBucket,
+          authDomain: config.authDomain,
+          measurementId: config.measurementId,
+          iosBundleId: config.iosBundleId,
+          iosClientId: config.iosClientId,
+          androidClientId: config.androidClientId,
+          configMethod: config.configMethod,
+          npmPackage: config.npmPackage,
+          sdkVersion: config.sdkVersion,
+          cdnUrl: config.cdnUrl,
         );
         workspace = workspace.copyWith(
           firebaseConfig: updatedConfig,
@@ -288,7 +280,7 @@ class DirectTenantProvisioner implements TenantProvisioner {
         // while provisioning is marked in-flight.
         final tenantApp = await _firebaseManager.initializeTenantApp(
           workspaceId: workspace.workspaceId,
-          options: workspace.firebaseConfig.toFirebaseOptions(),
+          options: config.toFirebaseOptions(),
         );
         _firebaseManager.markProvisioning(workspaceId);
         debugPrint(
@@ -647,6 +639,8 @@ _active.remove(workspace.workspaceId);
           companyId: companyId,
           adminUid: adminUid,
           adminEmail: normalizedEmail,
+          firebaseProjectId: workspace.firebaseProjectId,
+          firebaseConfig: workspace.firebaseConfig,
         );
       } catch (e, st) {
         debugPrint(

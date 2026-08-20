@@ -731,28 +731,29 @@ else if (pageWorkspaces.isEmpty)
           ),
           Expanded(
             flex: 1,
-            child: Center(
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    workspace.gcpProjectVerified
-                        ? Icons.verified_rounded
-                        : Icons.warning_amber_rounded,
-                    color: workspace.gcpProjectVerified ? kCoGreen : kCoAmber,
-                    size: 16,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  workspace.gcpProjectVerified
+                      ? Icons.verified_rounded
+                      : Icons.warning_amber_rounded,
+                  color: workspace.gcpProjectVerified ? kCoGreen : kCoAmber,
+                  size: 16,
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
                     workspace.gcpProjectVerified ? 'Verified' : 'Unverified',
+                    overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       color: workspace.gcpProjectVerified ? kCoGreen : kCoAmber,
                       fontSize: 11.5,
                       fontWeight: FontWeight.w700,
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
           Expanded(

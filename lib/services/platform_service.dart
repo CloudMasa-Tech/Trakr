@@ -67,24 +67,29 @@ class PlatformService {
   Future<PlatformStats> getStats() async {
     const path = statsPath;
     _log('READ $path');
-    final doc = await _firestore.doc(path).get();
-    if (!doc.exists) {
-      _log('READ $path MISSING — running reconcileStats');
-      await reconcileStats();
-      final fresh = await _firestore.doc(path).get();
-      _log('READ $path SUCCESS after reconcile');
-      return PlatformStats.fromFirestore(fresh);
+    try {
+      final doc = await _firestore.doc(path).get();
+      if (!doc.exists) {
+        _log('READ $path MISSING — running reconcileStats');
+        await reconcileStats();
+        final fresh = await _firestore.doc(path).get();
+        _log('READ $path SUCCESS after reconcile');
+        return PlatformStats.fromFirestore(fresh);
+      }
+      _log('READ $path SUCCESS');
+      final stats = PlatformStats.fromFirestore(doc);
+      final stale = stats.lastUpdated == null ||
+          DateTime.now().difference(stats.lastUpdated!) >
+              const Duration(hours: 24);
+      if (stale) {
+        _log('READ $path STALE — running reconcileStats in background');
+        unawaited(reconcileStats());
+      }
+      return stats;
+    } on FirebaseException catch (e) {
+      _log('READ $path FAILED (${e.code}): ${e.message}');
+      return const PlatformStats();
     }
-    _log('READ $path SUCCESS');
-    final stats = PlatformStats.fromFirestore(doc);
-    final stale = stats.lastUpdated == null ||
-        DateTime.now().difference(stats.lastUpdated!) >
-            const Duration(hours: 24);
-    if (stale) {
-      _log('READ $path STALE — running reconcileStats in background');
-      unawaited(reconcileStats());
-    }
-    return stats;
   }
 
   /// Applies numeric deltas (positive or negative) to the stats document.
@@ -102,9 +107,18 @@ class PlatformService {
   /// (stats missing) and via the "Refresh stats" button.
   Future<void> reconcileStats() async {
     _log('RECONCILE start — reading source collections');
-    final companiesSnap = await _firestore.collection('companies').get();
-    _log(
-        'RECONCILE READ companies SUCCESS (${companiesSnap.docs.length} docs)');
+
+    var companiesSnapDocs = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    try {
+      final companiesSnap = await _firestore.collection('companies').get();
+      companiesSnapDocs = companiesSnap.docs;
+      _log(
+          'RECONCILE READ companies SUCCESS (${companiesSnapDocs.length} docs)');
+    } on FirebaseException catch (e) {
+      _log('RECONCILE READ companies FAILED (${e.code}): ${e.message}');
+      // Continue with empty companies — all company-derived stats will be zero
+    }
+
     final now = DateTime.now();
 
     var active = 0;
@@ -119,7 +133,7 @@ class PlatformService {
     var planEnterprise = 0;
     final companiesByMonth = <String, int>{};
 
-    for (final doc in companiesSnap.docs) {
+    for (final doc in companiesSnapDocs) {
       final data = doc.data();
       final isActive = data['isActive'] ?? true;
       if (isActive == true) {
@@ -211,26 +225,32 @@ class PlatformService {
     }
 
     _log('WRITE $statsPath (reconcile merge)');
-    await _firestore.doc(statsPath).set({
-      'totalCompanies': companiesSnap.docs.length,
-      'activeCompanies': active,
-      'suspendedCompanies': suspended,
-      'pendingApprovals': pending,
-      'totalUsers': userCount,
-      'activeUsersToday': activeToday,
-      'activeSubscriptions': paid,
-      'trialCompanies': trial,
-      'expiringSubscriptions': expiring,
-      'planFree': planFree,
-      'planStarter': planStarter,
-      'planPro': planPro,
-      'planEnterprise': planEnterprise,
-      'openTickets': openTickets,
-      'closedTickets': closedTickets,
-      'companiesByMonth': companiesByMonth,
-      'lastUpdated': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
-    _log('WRITE $statsPath SUCCESS');
+    try {
+      await _firestore.doc(statsPath).set({
+        'totalCompanies': companiesSnapDocs.length,
+        'activeCompanies': active,
+        'suspendedCompanies': suspended,
+        'pendingApprovals': pending,
+        'totalUsers': userCount,
+        'activeUsersToday': activeToday,
+        'activeSubscriptions': paid,
+        'trialCompanies': trial,
+        'expiringSubscriptions': expiring,
+        'planFree': planFree,
+        'planStarter': planStarter,
+        'planPro': planPro,
+        'planEnterprise': planEnterprise,
+        'openTickets': openTickets,
+        'closedTickets': closedTickets,
+        'companiesByMonth': companiesByMonth,
+        'lastUpdated': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      _log('WRITE $statsPath SUCCESS');
+    } on FirebaseException catch (e) {
+      _log('WRITE $statsPath FAILED (${e.code}): ${e.message}');
+      // Permission denied or other Firestore error — stats remain stale but
+      // the dashboard will fall back to whatever was previously stored.
+    }
   }
 
   // ---------------------------------------------------------------------------

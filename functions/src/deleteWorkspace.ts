@@ -446,7 +446,10 @@ async function _allocationsDelete(workspaceId: string, projectId: string): Promi
   const masterDb = masterApp.firestore();
   
   try {
-    await masterDb.collection('project_allocations').doc(projectId).delete();
+    await Promise.all([
+      masterDb.collection('project_allocations').doc(projectId).delete().catch(() => undefined),
+      masterDb.collection('firebase_project_allocations').doc(projectId).delete().catch(() => undefined),
+    ]);
   } catch (e) {
     // Ignore if not found
   }

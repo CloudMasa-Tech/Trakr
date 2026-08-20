@@ -167,6 +167,42 @@ service cloud.firestore {
       allow write: if isSuperAdmin();
     }
 
+    // ================================================================
+    // PLATFORM DASHBOARD DATA COLLECTIONS
+    // ================================================================
+    // These collections are read by PlatformService for the superadmin
+    // dashboard (reconcileStats, streamSecurityEvents, streamAnnouncements,
+    // streamInvoices, streamPayments).
+    match /companies/{companyId} {
+      allow read: if isSuperAdmin();
+      allow write: if isSuperAdmin();
+    }
+    match /attendance/{docId} {
+      allow read: if isSuperAdmin();
+      allow write: if false;
+    }
+    match /support_tickets/{docId} {
+      allow read: if isSuperAdmin();
+      allow write: if isSuperAdmin();
+    }
+    match /security_events/{docId} {
+      allow read: if isSuperAdmin();
+      allow create: if isSuperAdmin();
+      allow update, delete: if isSuperAdmin();
+    }
+    match /announcements/{docId} {
+      allow read: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+    match /billing/invoices/{docId} {
+      allow read: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+    match /billing/payments/{docId} {
+      allow read: if isSuperAdmin();
+      allow create, update, delete: if isSuperAdmin();
+    }
+
     // ── Catch‑all deny ────────────────────────────────────────────────
     // Anything not explicitly matched above (including control-plane/platform
     // collections such as plans, subscriptions, billing, audit logs, etc.) is

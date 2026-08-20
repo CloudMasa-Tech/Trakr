@@ -20,6 +20,22 @@ class WorkspaceRepository {
 
   FirebaseFirestore get _firestore => _context.firestore;
 
+  void _validateFirebaseProjectConsistency(Map<String, dynamic> data) {
+    final firebaseProjectId = (data['firebaseProjectId'] as String?)?.trim() ?? '';
+    final firebaseConfig = data['firebaseConfig'];
+    final configProjectId = firebaseConfig is Map
+        ? (firebaseConfig['projectId'] as String?)?.trim() ?? ''
+        : '';
+    if (firebaseProjectId.isNotEmpty &&
+        configProjectId.isNotEmpty &&
+        firebaseProjectId != configProjectId) {
+      throw StateError(
+        'Workspace Firebase project mismatch: firebaseProjectId="$firebaseProjectId'
+        '" does not match firebaseConfig.projectId="$configProjectId".',
+      );
+    }
+  }
+
   /// A fresh auto-generated id for a new workspace registry entry.
   Future<String> nextId() async {
     return _firestore.collection(_collectionName).doc().id;
@@ -86,19 +102,25 @@ class WorkspaceRepository {
 
   /// Persists a workspace registry entry (create or full overwrite).
   Future<void> create(Workspace workspace) async {
+    final data = workspace.toMap();
+    _validateFirebaseProjectConsistency(data);
     await _firestore
         .collection(_collectionName)
         .doc(workspace.workspaceId)
-        .set(workspace.toMap());
+        .set(data);
   }
 
   /// Applies a partial update to a workspace entry. Always stamps `updatedAt`.
   Future<void> update(String workspaceId, Map<String, dynamic> updates) async {
-    updates['updatedAt'] = FieldValue.serverTimestamp();
-    await _firestore
-        .collection(_collectionName)
-        .doc(workspaceId)
-        .update(updates);
+    final ref = _firestore.collection(_collectionName).doc(workspaceId);
+    final current = await ref.get();
+    final merged = <String, dynamic>{
+      if (current.data() != null) ...current.data()!,
+      ...updates,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    _validateFirebaseProjectConsistency(merged);
+    await ref.update(merged);
   }
 
   /// Deletes a workspace registry entry.

@@ -333,14 +333,38 @@ class FirebaseConfigValidator {
   ///
   /// A "already exists" error means the config matched an app initialized
   /// earlier in the same session — a valid, reachable project.
+  ///
+  /// Raw HTTP 400 responses from the Identity Toolkit API (e.g.
+  /// `EMAIL_NOT_FOUND`, `INVALID_LOGIN_CREDENTIALS`, `INVALID_PASSWORD`) are
+  /// also treated as success because they prove the API key + project are
+  /// reachable — only the throwaway probe credentials were rejected.
   static FirebaseConfigConnectionResult classifyGenericFailure(
     Object e,
     String projectId,
   ) {
     final raw = e.toString().replaceFirst('Exception: ', '');
-    if (raw.toLowerCase().contains('already exists')) {
+    final lower = raw.toLowerCase();
+    if (lower.contains('already exists')) {
       // The config matched an app already initialized in this session. That is
       // effectively a valid, reachable project.
+      return FirebaseConfigConnectionResult.success(
+        projectId: projectId,
+        message: 'Connected to Firebase project "$projectId". '
+            'The configuration is valid.',
+      );
+    }
+    // Raw HTTP 400 from Identity Toolkit — proves the API key + project are
+    // reachable; only the throwaway probe credentials were rejected.
+    const authProbeSuccessPatterns = [
+      'email_not_found',
+      'invalid_login_credentials',
+      'invalid_password',
+      'invalid_email',
+      'user_not_found',
+      'wrong_password',
+      'too_many_requests',
+    ];
+    if (authProbeSuccessPatterns.any(lower.contains)) {
       return FirebaseConfigConnectionResult.success(
         projectId: projectId,
         message: 'Connected to Firebase project "$projectId". '

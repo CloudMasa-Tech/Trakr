@@ -114,3 +114,161 @@ The catch-all `/{document=**}` denies all read/write. Row-level authorization is
 - No CI config, no Cursor/Copilot rule files, and no automated test suite currently exist in this repo.
 - **Tenant Firestore rules are now deployed automatically via Cloud Function `deployTenantRules` during provisioning** — no manual `firebase deploy` per tenant needed.
 - **Superadmin custom claim** (`super_admin: true`) is the preferred authorization mechanism in Firestore rules (checked via `request.auth.token.super_admin`). The fallback email match in `app_config/admin_access` remains for initial bootstrap.
+
+# TRakr Multi-Tenant Architecture (Corrected)
+
+## Core Principle
+
+**One master project (Blaze) orchestrates many isolated tenant projects (Spark).**
+The master project never stores tenant business data. Tenant projects never touch billing.
+
+```
+                    ┌─────────────────────────────┐
+                    │   MASTER PROJECT (Blaze)     │
+                    │   trakradminsetup-28437      │
+                    │                               │
+                    │  - Admin/onboarding UI        │
+                    │  - Cloud Functions (control)  │
+                    │  - Master Firestore           │
+                    │    (workspaces, platformStats,│
+                    │     users/superadmins,        │
+                    │     activity_logs)             │
+                    │  - Service Account w/          │
+                    │    Project Creator role on     │
+                    │    folders/818058604638        │
+                    └───────────────┬───────────────┘
+                                    │
+                     creates & provisions via
+                     Cloud Functions (idempotent)
+                                    │
+        ┌───────────────────────────┼───────────────────────────┐
+        │                           │                           │
+        ▼                           ▼                           ▼
+┌───────────────┐          ┌───────────────┐          ┌───────────────┐
+│ TENANT PROJECT │          │ TENANT PROJECT │          │ TENANT PROJECT │
+│   (Spark)      │          │   (Spark)      │          │   (Spark)      │
+│ company-A-xxxx │          │ company-B-xxxx │          │ company-C-xxxx │
+│                │          │                │          │                │
+│ - Firestore    │          │ - Firestore    │          │ - Firestore    │
+│   (Native mode)│          │   (Native mode)│          │   (Native mode)│
+│ - Email/Pass   │          │ - Email/Pass   │          │ - Email/Pass   │
+│   Auth only    │          │   Auth only    │          │   Auth only    │
+│ - Firestore    │          │ - Firestore    │          │ - Firestore    │
+│   rules        │          │   rules        │          │   rules        │
+│ - NO Storage   │          │ - NO Storage   │          │ - NO Storage   │
+│ - NO Phone Auth│          │ - NO Phone Auth│          │ - NO Phone Auth│
+│ - NO billing   │          │ - NO billing   │          │ - NO billing   │
+│   linked       │          │   linked       │          │   linked       │
+└───────────────┘          └───────────────┘          └───────────────┘
+        all live under folders/818058604638
+```
+
+---
+
+## 1. Master Project (Blaze — one time setup)
+
+**Purpose:** control plane only. Orchestrates tenant lifecycle, never holds tenant business data.
+
+| Component | Requirement |
+|---|---|
+| Pricing plan | **Blaze** (required — Cloud Functions need outbound network access to call CRM/Firebase Management APIs) |
+| Billing account | One Google Cloud Billing Account, linked once |
+| Service account | `Project Creator` role on `folders/818058604638`, plus Firebase Admin, Service Usage Admin, Firestore Admin scopes |
+| APIs enabled | `cloudresourcemanager`, `firebase`, `firestore`, `identitytoolkit`, `serviceusage` |
+| Firestore collections | `workspaces`, `platformStats/dashboard`, `activity_logs`, `users` (superadmins), `white_label_config` |
+| Cloud Functions | `createTenantProject`, `deleteWorkspace`, `deployTenantRules` |
+
+**Cost model:** you (CloudMaSa) pay only for the master project's Blaze usage — Cloud Functions invocations, CRM/Firebase Management API calls. This is small and predictable regardless of tenant count.
+
+---
+
+## 2. Tenant Projects (Spark — created per client, fully automated)
+
+**Purpose:** isolated data + auth boundary per client company. No cost to you or them unless they exceed free quotas.
+
+| Allowed on Spark (use these) | Blaze-only (avoid for tenants) |
+|---|---|
+| Firestore Native mode (free daily quota) | Cloud Storage / Firebase Storage buckets (blocked entirely on Spark since Sept 2024) |
+| Email/Password Auth (up to 50K MAU free) | Phone Auth / SMS verification (Blaze-only since Sept 2024) |
+| Firebase Hosting | Cloud Functions with outbound network calls to non-Google APIs |
+| Analytics, Crashlytics, FCM | Any usage exceeding Spark's free daily/monthly quota |
+| Firestore security rules deployment | — |
+
+**Design constraint:** if TRakr ever needs tenant-side file uploads (e.g. attendance photos, documents), that single feature would force that tenant's project onto Blaze. Decide now whether to support it via a **shared bucket in the master project** instead (tenant data segmented by workspace ID, path-scoped security rules) — this keeps all tenant projects on Spark permanently.
+
+---
+
+## 3. Provisioning Flow (idempotent, state-aware)
+
+```
+User submits "Onboard new company" form
+        │
+        ▼
+[Cloud Function: createTenantProject]
+        │
+        ├─ 1. generateUniqueProjectId(requestedId)
+        │     ├─ candidate exists? check lifecycleState
+        │     │    ├─ ACTIVE + under our folder → alreadyExisted=true, adopt it
+        │     │    ├─ ACTIVE + different parent → collision, generate new suffix
+        │     │    ├─ DELETE_REQUESTED / DELETE_IN_PROGRESS → collision
+        │     │    │   (30-day grace period lock), generate new suffix
+        │     │    └─ unknown state → treat as unusable, generate new suffix
+        │     └─ no candidate exists → create fresh
+        │
+        ├─ 2. projects.create() [with retry+backoff on transient errors]
+        ├─ 3. firebase.projects.addFirebase() [retry+backoff — GCP eventual consistency]
+        ├─ 4. enable required APIs (Firestore, Identity Toolkit)
+        ├─ 5. create Firestore Native DB [retry+backoff]
+        ├─ 6. enable Email/Password Auth provider
+        │
+        │   NO billing account linkage step — tenant stays Spark
+        │
+        └─ return { alreadyExisted, firebaseEnabled, apisEnabled,
+                     firestoreDbCreated, authEnabled, failedStep? }
+        │
+        ▼
+[Flutter client: TenantProvisioner]
+        │
+        ├─ safely parse response (asStringKeyedMap — handles JS interop LinkedMap)
+        ├─ if success or alreadyExisted → proceed
+        ├─ if transient/retryable error → already retried server-side; surface real error only after exhaustion
+        └─ continue to deployTenantRules → admin registration → onboardingStatus=ready
+```
+
+**Every step above must be retry-safe and idempotent** — re-running provisioning on a partially-completed workspace should pick up where it left off, not fail or duplicate resources.
+
+---
+
+## 4. Security Rules Boundary
+
+- **Master Firestore rules:** gate all reads/writes behind `isSuperAdmin()`, checked via custom claims *or* `users/{uid}.role == 'super_admin'` doc. Applies to `companies`, `attendance`, `support_tickets`, `security_events`, `announcements`, `billing/invoices`, `billing/payments`, and any other platform-dashboard collection.
+- **Tenant Firestore rules (`deployTenantRules`):** deployed independently per tenant project, scoped to that tenant's own admin/user accounts — completely separate rule set from the master project. Locked/default rules block tenant admins until this step succeeds.
+
+---
+
+## 5. Lifecycle / Cleanup
+
+- `deleteWorkspace` must check project `lifecycleState` before attempting mutation — a project already `DELETE_REQUESTED` is in a 30-day Google-enforced lock; deletion function should detect this and clean up **Firestore workspace records only**, not attempt further GCP mutation.
+- Never reuse a soft-deleted project ID until the 30-day window has passed (or use `gcloud projects undelete` within the window if recovery is needed).
+
+---
+
+## 6. What Requires Manual Setup (cannot be automated by Cloud Functions)
+
+| Task | Why manual |
+|---|---|
+| Master billing account creation + linkage | One-time org-level GCP action |
+| Master service account role grants | IAM policy changes typically done once via console/gcloud by an org admin |
+| GCP folder (`818058604638`) creation | Org structure, done once |
+| Quota increases (if tenant volume grows large) | Requires a Google support request |
+| Waiting out 30-day soft-delete grace periods | Google-enforced, no API override |
+
+Everything else — project creation, Firebase enablement, Firestore DB, Auth config, rules deployment — should be **fully automated and idempotent** per your current fixes.
+
+---
+
+## Summary of Your Goal vs. Reality
+
+✅ **Achievable as designed:** master project on Blaze, every tenant project on Spark, using only Firestore Native + Email/Password Auth + Hosting.
+
+⚠️ **Watch for:** any future feature requiring Cloud Storage or Phone Auth on tenant projects will force that tenant to Blaze. Plan around this now (e.g. centralize file storage in the master project) if you want to guarantee Spark-only tenants long-term.

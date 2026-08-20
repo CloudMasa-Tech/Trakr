@@ -422,7 +422,10 @@ async function _allocationsDelete(workspaceId, projectId) {
     const masterApp = (0, firebaseAdmin_1.getMasterAdmin)();
     const masterDb = masterApp.firestore();
     try {
-        await masterDb.collection('project_allocations').doc(projectId).delete();
+        await Promise.all([
+            masterDb.collection('project_allocations').doc(projectId).delete().catch(() => undefined),
+            masterDb.collection('firebase_project_allocations').doc(projectId).delete().catch(() => undefined),
+        ]);
     }
     catch (e) {
         // Ignore if not found

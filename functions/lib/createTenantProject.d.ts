@@ -12,7 +12,10 @@
  *   3. Firebase enablement via Firebase Management API (wait for completion)
  *   4. Required API enablement via Service Usage API (wait for completion)
  *   5. Firestore database creation in Native mode (wait for completion)
- *   6. Email/Password auth provider enablement via Identity Toolkit API
+ *   6. Email/Password auth provider enablement via Firebase API provisioning
+ *      - GET the current config first for diagnostics
+ *      - Ensure a Firebase Web app exists for the project
+ *      - Provision auth through firebase:provisionFirebaseApp with firebaseAuthInput
  *   7. Firestore rules + indexes deploy (NOT done here — done by tenant_provisioner)
  *
  * Requires: Caller must be an authenticated superadmin (custom claim super_admin == true)

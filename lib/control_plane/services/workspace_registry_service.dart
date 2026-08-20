@@ -115,6 +115,13 @@ class WorkspaceRegistryService {
         'A workspace already exists with code "$workspaceCode".',
       );
     }
+    if (firebaseProjectId.trim() != firebaseConfig.projectId.trim()) {
+      throw StateError(
+        'Workspace Firebase project mismatch: firebaseProjectId="$firebaseProjectId'
+        '" does not match firebaseConfig.projectId="$firebaseConfig.projectId". '
+        'Refuse to register inconsistent workspace data.',
+      );
+    }
 
     final id = workspaceId ?? await _repository.nextId();
     final now = DateTime.now();
@@ -162,6 +169,7 @@ class WorkspaceRegistryService {
   ) async {
     await _repository.update(workspaceId, {
       'firebaseConfig': firebaseConfig.toMap(),
+      'firebaseProjectId': firebaseConfig.projectId,
     });
     return _requireUpdated(workspaceId);
   }

@@ -13,7 +13,10 @@
  *   3. Firebase enablement via Firebase Management API (wait for completion)
  *   4. Required API enablement via Service Usage API (wait for completion)
  *   5. Firestore database creation in Native mode (wait for completion)
- *   6. Email/Password auth provider enablement via Identity Toolkit API
+ *   6. Email/Password auth provider enablement via Firebase API provisioning
+ *      - GET the current config first for diagnostics
+ *      - Ensure a Firebase Web app exists for the project
+ *      - Provision auth through firebase:provisionFirebaseApp with firebaseAuthInput
  *   7. Firestore rules + indexes deploy (NOT done here — done by tenant_provisioner)
  *
  * Requires: Caller must be an authenticated superadmin (custom claim super_admin == true)
@@ -123,16 +126,28 @@ async function generateUniqueProjectId(baseProjectId, accessToken) {
     if (!existing) {
         return { finalId: baseProjectId, alreadyExisted: false };
     }
-    // Project exists under our folder — it's already ours
-    if (existing.parent === FOLDER_RESOURCE) {
-        v2_1.logger.info('Project already exists under managed folder', { projectId: baseProjectId });
-        return { finalId: baseProjectId, alreadyExisted: true };
+    if (existing.state === 'ACTIVE') {
+        // Project exists under our folder — it's already ours
+        if (existing.parent === FOLDER_RESOURCE) {
+            v2_1.logger.info('Project already exists under managed folder', { projectId: baseProjectId });
+            return { finalId: baseProjectId, alreadyExisted: true };
+        }
+        // Collision with a project outside our folder — generate new ID with suffix
+        v2_1.logger.warn('Project ID collision - generating new ID', {
+            originalId: baseProjectId,
+            existingParent: existing.parent,
+            state: existing.state,
+        });
     }
-    // Collision with a project outside our folder — generate new ID with suffix
-    v2_1.logger.warn('Project ID collision - generating new ID', {
-        originalId: baseProjectId,
-        existingParent: existing.parent,
-    });
+    else if (existing.state === 'DELETE_REQUESTED' || existing.state === 'DELETE_IN_PROGRESS') {
+        // GCP project IDs stay reserved for 30 days after deletion (state DELETE_REQUESTED).
+        // We cannot adopt them, so we must generate a new ID.
+        v2_1.logger.info(`Project ID ${baseProjectId} is soft-deleted (grace period), generating a new ID`, { projectId: baseProjectId, state: existing.state });
+    }
+    else {
+        // Any other/unknown state: be conservative and treat as unusable
+        v2_1.logger.warn(`Project ID ${baseProjectId} is in unknown state (${existing.state}), treating as unusable`, { projectId: baseProjectId });
+    }
     for (let attempt = 0; attempt < MAX_COLLISION_RETRIES; attempt++) {
         const suffix = generateRandomSuffix(SUFFIX_LENGTH);
         const candidateId = `${baseProjectId}-${suffix}`;
@@ -147,6 +162,61 @@ async function generateUniqueProjectId(baseProjectId, accessToken) {
     }
     throw new Error(`Could not generate unique project ID after ${MAX_COLLISION_RETRIES} attempts. ` +
         `Base ID "${baseProjectId}" and all suffixes collide with existing projects.`);
+}
+// ─── Helper: retry with exponential backoff ──────────────────────────────────
+/**
+ * Retries a GCP/Firebase API call with exponential backoff if it hits a transient error.
+ * GCP project creation is eventually consistent; APIs immediately after project creation
+ * may reject with transient errors (e.g. FAILED_PRECONDITION) until propagation finishes.
+ */
+async function withRetry(projectId, stepName, operation, maxAttempts = 10) {
+    let attempt = 1;
+    let delayMs = 2000;
+    const startTime = Date.now();
+    while (true) {
+        try {
+            return await operation();
+        }
+        catch (e) {
+            const errorMsg = e.message || '';
+            const isTransient = errorMsg.includes('transient state') ||
+                errorMsg.includes('FAILED_PRECONDITION') ||
+                errorMsg.includes('HTTP 409') ||
+                errorMsg.includes('has not been used') ||
+                errorMsg.includes('SERVICE_DISABLED');
+            if (!isTransient || attempt >= maxAttempts) {
+                throw e;
+            }
+            const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+            let reason = 'transient error';
+            if (errorMsg.includes('has not been used') || errorMsg.includes('SERVICE_DISABLED')) {
+                reason = 'Propagation delay detected (API not yet active)';
+            }
+            v2_1.logger.warn(`${stepName} ${reason} on ${projectId}, retrying in ${delayMs / 1000}s (attempt ${attempt}/${maxAttempts}, total elapsed ${elapsedSec}s)`, { projectId, error: errorMsg });
+            await new Promise((resolve) => setTimeout(resolve, delayMs));
+            attempt++;
+            delayMs = Math.min(delayMs * 2, 30000); // cap at 30s
+        }
+    }
+}
+// ─── Helper: poll project until ACTIVE (eventual consistency) ────────────────
+async function pollProjectActive(projectId, accessToken, maxAttempts = 15, intervalMs = 4000) {
+    const startTime = Date.now();
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const existing = await getProjectIfExists(projectId, accessToken);
+        if (existing && existing.state === 'ACTIVE') {
+            const nameParts = existing.name.split('/');
+            const projectNumber = nameParts.length > 1 ? nameParts[1] : '';
+            return { name: existing.name, projectNumber };
+        }
+        const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+        const stateStr = existing ? existing.state : 'NOT_FOUND';
+        v2_1.logger.warn(`Project ${projectId} state is ${stateStr}, polling until ACTIVE (attempt ${attempt}/${maxAttempts}, total elapsed ${elapsedSec}s)`, { projectId, state: stateStr });
+        if (attempt < maxAttempts) {
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        }
+    }
+    throw new https_1.HttpsError('internal', `Project "${projectId}" did not become ACTIVE within ${(maxAttempts * intervalMs) / 1000} seconds.`);
 }
 // ─── Helper: poll a long-running operation until done ───────────────────────
 async function pollOperation(operationUrl, accessToken, maxAttempts = 60, intervalMs = 5000) {
@@ -187,6 +257,11 @@ async function enableFirebaseOnProject(projectId, accessToken) {
     });
     if (!resp.ok) {
         const errText = await resp.text();
+        // 409 = Firebase already enabled on this project — treat as success (idempotent)
+        if (resp.status === 409 || errText.includes('ALREADY_EXISTS') || errText.includes('already')) {
+            v2_1.logger.info(`Firebase is already enabled on ${projectId}, proceeding.`, { projectId });
+            return;
+        }
         throw new Error(`addFirebase HTTP ${resp.status}: ${errText}`);
     }
     const body = await resp.json();
@@ -194,7 +269,7 @@ async function enableFirebaseOnProject(projectId, accessToken) {
     // A long-running operation has a `name` field and `done` is false/undefined.
     if (body.name && typeof body.done === 'boolean' && !body.done) {
         const opUrl = `https://firebase.googleapis.com/v1beta1/${body.name}`;
-        const poll = await pollOperation(opUrl, accessToken, 60, 5000);
+        const poll = await pollOperation(opUrl, accessToken, 40, 3000);
         if (poll.error) {
             throw new Error(`Firebase enablement operation failed: ${poll.error}`);
         }
@@ -213,28 +288,29 @@ async function enableRequiredApis(projectId, accessToken) {
         body: JSON.stringify({
             serviceIds: [
                 'firestore.googleapis.com',
-                'firebaseauth.googleapis.com',
                 'identitytoolkit.googleapis.com',
-                'firebasestorage.googleapis.com',
-                'cloudfunctions.googleapis.com',
-                'cloudbuild.googleapis.com',
             ],
         }),
     });
     if (!resp.ok) {
         const errText = await resp.text();
+        // 409 = one or more services already enabled/enabling — treat as success (idempotent)
+        if (resp.status === 409 || errText.includes('ALREADY_EXISTS') || errText.includes('already')) {
+            v2_1.logger.info('APIs already enabled or being enabled', { projectId });
+            return;
+        }
         throw new Error(`batchEnable HTTP ${resp.status}: ${errText}`);
     }
     const op = await resp.json();
     const opUrl = `https://serviceusage.googleapis.com/v1/${op.name}`;
-    const poll = await pollOperation(opUrl, accessToken, 60, 5000);
+    const poll = await pollOperation(opUrl, accessToken, 40, 3000);
     if (poll.error) {
         throw new Error(`API enablement operation failed: ${poll.error}`);
     }
 }
 // ─── Helper: create Firestore database in Native mode (wait for completion) ─
 async function createFirestoreDatabase(projectId, accessToken) {
-    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases`;
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases?databaseId=(default)`;
     const resp = await fetch(url, {
         method: 'POST',
         headers: {
@@ -242,8 +318,7 @@ async function createFirestoreDatabase(projectId, accessToken) {
             'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-            databaseId: '(default)',
-            locationId: 'us-central',
+            locationId: 'us-central1',
             type: 'FIRESTORE_NATIVE',
         }),
     });
@@ -260,31 +335,175 @@ async function createFirestoreDatabase(projectId, accessToken) {
     // The Firestore API returns a long-running operation
     if (body.name && typeof body.done === 'boolean' && !body.done) {
         const opUrl = `https://firestore.googleapis.com/v1/${body.name}`;
-        const poll = await pollOperation(opUrl, accessToken, 60, 5000);
+        const poll = await pollOperation(opUrl, accessToken, 40, 3000);
         if (poll.error) {
             throw new Error(`Firestore database creation failed: ${poll.error}`);
         }
     }
 }
-// ─── Helper: enable Email/Password auth provider ────────────────────────────
-async function enableEmailPasswordAuth(projectId, accessToken) {
-    const url = `https://identitytoolkit.googleapis.com/v2/projects/${projectId}/config?updateMask=email.enabled`;
+async function getAuthProjectConfig(projectId, accessToken) {
+    const url = 'https://identitytoolkit.googleapis.com/admin/v2/projects/' + projectId + '/config';
     const resp = await fetch(url, {
-        method: 'PATCH',
+        method: 'GET',
         headers: {
-            'Authorization': `Bearer ${accessToken}`,
+            'Authorization': 'Bearer ' + accessToken,
             'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-            email: {
-                enabled: true,
-            },
-        }),
+    });
+    const bodyText = await resp.text();
+    v2_1.logger.info('Auth config GET diagnostic', {
+        projectId,
+        status: resp.status,
+        bodyText,
+    });
+    let config;
+    if (bodyText) {
+        try {
+            config = JSON.parse(bodyText);
+        }
+        catch {
+            // Keep the raw diagnostic text only.
+        }
+    }
+    return { status: resp.status, bodyText, config };
+}
+/*
+ * Why this exists:
+ * - `identitytoolkit.googleapis.com/v2/projects/.../identityPlatform:initializeAuth`
+ *   is the paid Identity Platform path. It returns BILLING_NOT_ENABLED on fresh Spark projects.
+ * - The Firebase CLI's auth deploy flow traces through `firebase-tools` and uses
+ *   `firebase.googleapis.com/v1alpha/firebase:provisionFirebaseApp` instead.
+ * - That Firebase API call is the Spark-compatible path for enabling Email/Password auth
+ *   on a brand-new Firebase project, and it must be preserved here.
+ */
+async function ensureFirebaseWebApp(projectId, accessToken) {
+    const listUrl = 'https://firebase.googleapis.com/v1beta1/projects/' + projectId + '/webApps?pageSize=1000';
+    const listResp = await fetch(listUrl, {
+        method: 'GET',
+        headers: {
+            'Authorization': 'Bearer ' + accessToken,
+            'Content-Type': 'application/json',
+        },
+    });
+    if (listResp.ok) {
+        const listBody = await listResp.json();
+        const apps = Array.isArray(listBody.apps) ? listBody.apps : [];
+        let app = apps.find((candidate) => candidate.displayName === 'Default Web App');
+        if (!app && apps.length > 0) {
+            app = apps[0];
+        }
+        if (app?.appId) {
+            v2_1.logger.info('Using existing Firebase Web app for auth provisioning', {
+                projectId,
+                appId: app.appId,
+                displayName: app.displayName,
+            });
+            return app;
+        }
+    }
+    else {
+        const errText = await listResp.text();
+        v2_1.logger.warn('Firebase web app listing failed; attempting to create a default web app', {
+            projectId,
+            status: listResp.status,
+            errText,
+        });
+    }
+    const createResp = await fetch('https://firebase.googleapis.com/v1beta1/projects/' + projectId + '/webApps', {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Bearer ' + accessToken,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ displayName: 'Default Web App' }),
+    });
+    if (!createResp.ok) {
+        const errText = await createResp.text();
+        throw new Error('createWebApp HTTP ' + createResp.status + ': ' + errText);
+    }
+    const createBody = await createResp.json();
+    if (createBody.done === true && createBody.response?.appId) {
+        v2_1.logger.info('Created Firebase Web app for auth provisioning', {
+            projectId,
+            appId: createBody.response.appId,
+            displayName: createBody.response.displayName,
+        });
+        return createBody.response;
+    }
+    if (!createBody.name) {
+        throw new Error('createWebApp did not return an operation name or inline response.');
+    }
+    const operationUrl = 'https://firebase.googleapis.com/v1beta1/' + createBody.name;
+    const poll = await pollOperation(operationUrl, accessToken, 40, 3000);
+    if (poll.error) {
+        throw new Error('Firebase web app creation failed: ' + poll.error);
+    }
+    const app = poll.result;
+    if (!app?.appId) {
+        throw new Error('Firebase web app creation completed without an appId for ' + projectId + '.');
+    }
+    v2_1.logger.info('Created Firebase Web app for auth provisioning', {
+        projectId,
+        appId: app.appId,
+        displayName: app.displayName,
+    });
+    return app;
+}
+async function enableEmailPasswordAuth(projectId, accessToken) {
+    const initialGet = await getAuthProjectConfig(projectId, accessToken);
+    if (initialGet.status !== 200 && initialGet.status !== 404) {
+        throw new Error('Auth config GET returned unexpected HTTP ' + initialGet.status + ': ' + (initialGet.bodyText || '(empty response)'));
+    }
+    const webApp = await ensureFirebaseWebApp(projectId, accessToken);
+    const provisionUrl = 'https://firebase.googleapis.com/v1alpha/firebase:provisionFirebaseApp';
+    const provisionRequest = {
+        appNamespace: webApp.appId,
+        parent: 'projects/' + projectId,
+        webInput: {},
+        firebaseAuthInput: {
+            emailAuthProviderMode: 'PROVIDER_ENABLED',
+        },
+    };
+    v2_1.logger.info('Provisioning Firebase auth provider via Firebase API', {
+        projectId,
+        appId: webApp.appId,
+        request: provisionRequest,
+        previousConfigStatus: initialGet.status,
+    });
+    const resp = await fetch(provisionUrl, {
+        method: 'POST',
+        headers: {
+            'Authorization': 'Bearer ' + accessToken,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(provisionRequest),
     });
     if (!resp.ok) {
         const errText = await resp.text();
-        throw new Error(`enable Email/Password auth HTTP ${resp.status}: ${errText}`);
+        throw new Error('firebase:provisionFirebaseApp HTTP ' + resp.status + ': ' + errText);
     }
+    const operation = await resp.json();
+    if (operation.done === true) {
+        v2_1.logger.info('Email/Password auth provisioned synchronously', {
+            projectId,
+            appId: webApp.appId,
+            response: operation.response,
+        });
+        return;
+    }
+    if (!operation.name) {
+        throw new Error('firebase:provisionFirebaseApp did not return an operation name.');
+    }
+    const operationUrl = 'https://firebase.googleapis.com/v1beta1/' + operation.name;
+    const poll = await pollOperation(operationUrl, accessToken, 40, 3000);
+    if (poll.error) {
+        throw new Error('firebase:provisionFirebaseApp failed: ' + poll.error);
+    }
+    v2_1.logger.info('Email/Password auth provisioned', {
+        projectId,
+        appId: webApp.appId,
+        result: poll.result,
+    });
 }
 // ─── Main callable ──────────────────────────────────────────────────────────
 exports.createTenantProject = (0, https_1.onCall)({
@@ -292,7 +511,7 @@ exports.createTenantProject = (0, https_1.onCall)({
     region: 'us-central1',
     maxInstances: 5,
     memory: '512MiB',
-    timeoutSeconds: 300,
+    timeoutSeconds: 540,
 }, async (request) => {
     const startTime = Date.now();
     const projectId = request.data?.projectId;
@@ -357,61 +576,122 @@ exports.createTenantProject = (0, https_1.onCall)({
         v2_1.logger.info('createTenantProject: starting', { projectId: finalProjectId, companyName: rawCompanyName, displayName, alreadyExisted });
         let projectNumber = '';
         let projectName_ = '';
-        if (!alreadyExisted) {
-            // ---- Step 2: Create GCP project via Cloud Resource Manager API v3 ----
-            const projectCreateUrl = 'https://cloudresourcemanager.googleapis.com/v3/projects';
-            const projectBody = {
-                projectId: finalProjectId,
-                displayName,
-                parent: FOLDER_RESOURCE,
-            };
-            if (billingAccount && billingAccount.trim().length > 0) {
-                projectBody.billingAccount = billingAccount.trim();
-            }
-            const createResponse = await fetch(projectCreateUrl, {
-                method: 'POST',
-                headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-                body: JSON.stringify(projectBody),
-            });
-            if (!createResponse.ok) {
-                const errorText = await createResponse.text();
-                v2_1.logger.error('Project creation failed', { projectId: finalProjectId, status: createResponse.status, error: errorText });
-                if (createResponse.status === 403) {
-                    throw new https_1.HttpsError('permission-denied', `Service account lacks "Project Creator" role on folder ${TENANT_FOLDER_ID}. ` +
-                        `Grant it via: gcloud resource-manager folders add-iam-policy-binding ${TENANT_FOLDER_ID} ` +
-                        `--member="serviceAccount:<MASTER_SERVICE_ACCOUNT_EMAIL>" --role="roles/resourcemanager.projectCreator"`, { actionRequired: true, folderId: TENANT_FOLDER_ID });
+        let createAttempt = 0;
+        const MAX_CREATE_ATTEMPTS = 5;
+        while (createAttempt < MAX_CREATE_ATTEMPTS) {
+            if (!alreadyExisted) {
+                // ---- Step 2: Create GCP project via Cloud Resource Manager API v3 ----
+                const projectCreateUrl = 'https://cloudresourcemanager.googleapis.com/v3/projects';
+                const projectBody = {
+                    projectId: finalProjectId,
+                    displayName,
+                    parent: FOLDER_RESOURCE,
+                };
+                if (billingAccount && billingAccount.trim().length > 0) {
+                    projectBody.billingAccount = billingAccount.trim();
                 }
-                if (createResponse.status === 409 || errorText.includes('already exists')) {
-                    throw new https_1.HttpsError('already-exists', `Project ID "${finalProjectId}" already exists.`, { projectId: finalProjectId });
+                const createResponse = await fetch(projectCreateUrl, {
+                    method: 'POST',
+                    headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify(projectBody),
+                });
+                if (!createResponse.ok) {
+                    const errorText = await createResponse.text();
+                    if (createResponse.status === 403) {
+                        v2_1.logger.error('Project creation failed with 403', { projectId: finalProjectId, error: errorText });
+                        throw new https_1.HttpsError('permission-denied', `Service account lacks "Project Creator" role on folder ${TENANT_FOLDER_ID}. ` +
+                            `Grant it via: gcloud resource-manager folders add-iam-policy-binding ${TENANT_FOLDER_ID} ` +
+                            `--member="serviceAccount:<MASTER_SERVICE_ACCOUNT_EMAIL>" --role="roles/resourcemanager.projectCreator"`, { actionRequired: true, folderId: TENANT_FOLDER_ID });
+                    }
+                    // 409 = project already exists — try to adopt it instead of failing
+                    if (createResponse.status === 409 || errorText.includes('already exists') || errorText.includes('ALREADY_EXISTS')) {
+                        v2_1.logger.info(`Project ${finalProjectId} already exists. Attempting to verify access...`, { projectId: finalProjectId });
+                        const existing = await getProjectIfExists(finalProjectId, accessToken);
+                        if (existing && existing.state === 'ACTIVE' && existing.parent === FOLDER_RESOURCE) {
+                            // Adopted existing project under managed folder
+                            alreadyExisted = true;
+                            const nameParts = existing.name.split('/');
+                            projectNumber = nameParts.length > 1 ? nameParts[1] : '';
+                            projectName_ = existing.name;
+                            v2_1.logger.info('Adopted existing project under managed folder — all services will be verified', { projectId: finalProjectId, projectNumber });
+                            break; // Exit the creation loop
+                        }
+                        else if (existing && existing.state === 'ACTIVE') {
+                            throw new https_1.HttpsError('already-exists', `Project ID "${finalProjectId}" already exists under a different folder (${existing.parent}). ` +
+                                `Choose a different project ID or delete the existing project.`, { projectId: finalProjectId, existingParent: existing.parent });
+                        }
+                        else if (existing) {
+                            throw new https_1.HttpsError('already-exists', `Project ID "${finalProjectId}" is currently in state ${existing.state}. ` +
+                                `GCP project IDs stay reserved for 30 days after deletion. Please wait 30 days or use a different project ID.`, { projectId: finalProjectId, state: existing.state });
+                        }
+                        else {
+                            // 409 but project not visible via GET immediately. It could be propagation delay OR an orphaned collision.
+                            v2_1.logger.info('Got 409 but project not found via GET — polling for 15s to check for propagation delay', { projectId: finalProjectId });
+                            try {
+                                const activeProj = await pollProjectActive(finalProjectId, accessToken, 4, 4000); // 4 * 4s = 16s
+                                projectNumber = activeProj.projectNumber;
+                                projectName_ = activeProj.name;
+                                alreadyExisted = true;
+                                v2_1.logger.info('Resolved via propagation delay — project became ACTIVE and is ours.', { projectId: finalProjectId });
+                                break; // Exit the creation loop
+                            }
+                            catch (pollErr) {
+                                v2_1.logger.warn(`Resolved via collision/new suffix — Project ${finalProjectId} is inaccessible after polling (likely orphaned in another folder). Generating new ID...`, { projectId: finalProjectId });
+                                finalProjectId = `${projectId}-${generateRandomSuffix(SUFFIX_LENGTH)}`;
+                                projectIdChanged = true;
+                                createAttempt++;
+                                continue; // loop again with new ID!
+                            }
+                        }
+                    }
+                    else {
+                        v2_1.logger.error('Project creation failed', { projectId: finalProjectId, status: createResponse.status, error: errorText });
+                        throw new https_1.HttpsError('internal', `Failed to create project: ${errorText}`);
+                    }
                 }
-                throw new https_1.HttpsError('internal', `Failed to create project: ${errorText}`);
+                // Only poll the creation operation if we actually submitted a create request
+                // (not when we recovered from 409 and adopted an existing project)
+                if (!alreadyExisted) {
+                    const operation = await createResponse.json();
+                    const operationUrl = `https://cloudresourcemanager.googleapis.com/v3/${operation.name}`;
+                    const poll = await pollOperation(operationUrl, accessToken, 40, 3000);
+                    if (poll.error) {
+                        throw new https_1.HttpsError('internal', `Project creation failed: ${poll.error}`);
+                    }
+                    const createdProject = poll.result;
+                    projectNumber = createdProject.projectNumber ?? '';
+                    projectName_ = createdProject.name ?? '';
+                    v2_1.logger.info('GCP project created', { projectId: finalProjectId, projectNumber });
+                    break;
+                }
             }
-            const operation = await createResponse.json();
-            const operationUrl = `https://cloudresourcemanager.googleapis.com/v3/${operation.name}`;
-            const poll = await pollOperation(operationUrl, accessToken, 60, 5000);
-            if (poll.error) {
-                throw new https_1.HttpsError('internal', `Project creation failed: ${poll.error}`);
+            else {
+                // Project already existed — fetch its details
+                v2_1.logger.info('Skipping GCP project creation — already exists', { projectId: finalProjectId });
+                const existing = await getProjectIfExists(finalProjectId, accessToken);
+                if (existing && existing.state === 'ACTIVE') {
+                    // Extract project number from the name field (format: "projects/123456789")
+                    const nameParts = existing.name.split('/');
+                    projectNumber = nameParts.length > 1 ? nameParts[1] : '';
+                    projectName_ = existing.name;
+                    break;
+                }
+                else if (existing) {
+                    throw new https_1.HttpsError('internal', `Cannot adopt project ${finalProjectId} because its state is ${existing.state}`);
+                }
             }
-            const createdProject = poll.result;
-            projectNumber = createdProject.projectNumber ?? '';
-            projectName_ = createdProject.name ?? '';
-            v2_1.logger.info('GCP project created', { projectId: finalProjectId, projectNumber });
         }
-        else {
-            // Project already existed — fetch its details
-            v2_1.logger.info('Skipping GCP project creation — already exists', { projectId: finalProjectId });
-            const existing = await getProjectIfExists(finalProjectId, accessToken);
-            if (existing) {
-                // Extract project number from the name field (format: "projects/123456789")
-                const nameParts = existing.name.split('/');
-                projectNumber = nameParts.length > 1 ? nameParts[1] : '';
-                projectName_ = existing.name;
-            }
+        if (createAttempt >= MAX_CREATE_ATTEMPTS) {
+            throw new https_1.HttpsError('internal', `Failed to create project after ${MAX_CREATE_ATTEMPTS} collision retries.`);
         }
+        // Wait for project to be fully ACTIVE and replicated before touching Firebase APIs.
+        // This helps avoid FAILED_PRECONDITION when GCP propagation is slow.
+        v2_1.logger.info('Pre-flight check: ensuring project is ACTIVE before enabling Firebase', { projectId: finalProjectId });
+        await pollProjectActive(finalProjectId, accessToken);
         // ---- Step 3: Enable Firebase services (wait for completion) ----
         try {
             v2_1.logger.info('Enabling Firebase on project', { projectId: finalProjectId });
-            await enableFirebaseOnProject(finalProjectId, accessToken);
+            await withRetry(finalProjectId, 'Firebase enable', () => enableFirebaseOnProject(finalProjectId, accessToken));
             firebaseEnabled = true;
             v2_1.logger.info('Firebase enabled', { projectId: finalProjectId });
         }
@@ -423,7 +703,7 @@ exports.createTenantProject = (0, https_1.onCall)({
         // ---- Step 4: Enable required APIs (wait for completion) ----
         try {
             v2_1.logger.info('Enabling required APIs', { projectId: finalProjectId });
-            await enableRequiredApis(finalProjectId, accessToken);
+            await withRetry(finalProjectId, 'API enable', () => enableRequiredApis(finalProjectId, accessToken));
             apisEnabled = true;
             v2_1.logger.info('Required APIs enabled', { projectId: finalProjectId });
         }
@@ -435,9 +715,9 @@ exports.createTenantProject = (0, https_1.onCall)({
         // ---- Step 5: Create Firestore database in Native mode (wait for completion) ----
         try {
             v2_1.logger.info('Creating Firestore database', { projectId: finalProjectId });
-            await createFirestoreDatabase(finalProjectId, accessToken);
+            await withRetry(finalProjectId, 'Firestore DB create', () => createFirestoreDatabase(finalProjectId, accessToken));
             firestoreDbCreated = true;
-            v2_1.logger.info('Firestore database ready', { projectId: finalProjectId });
+            v2_1.logger.info('Firestore database created', { projectId: finalProjectId });
         }
         catch (e) {
             const msg = e.message;
@@ -457,6 +737,7 @@ exports.createTenantProject = (0, https_1.onCall)({
             throw new https_1.HttpsError('internal', `Failed to enable Email/Password auth on ${finalProjectId}: ${msg}`);
         }
         const durationMs = Date.now() - startTime;
+        v2_1.logger.info(`createTenantProject total duration: ${Math.round(durationMs / 1000)}s`);
         v2_1.logger.info('createTenantProject completed successfully', {
             projectId: finalProjectId,
             projectNumber,
@@ -487,8 +768,10 @@ exports.createTenantProject = (0, https_1.onCall)({
     }
     catch (error) {
         const durationMs = Date.now() - startTime;
+        v2_1.logger.info(`createTenantProject total duration: ${Math.round(durationMs / 1000)}s`);
         // Build partial status for diagnostics
         const partialStatus = {
+            alreadyExisted,
             firebaseEnabled,
             apisEnabled,
             firestoreDbCreated,

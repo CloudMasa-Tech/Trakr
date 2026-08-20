@@ -191,6 +191,7 @@ class CoMetricCard extends StatelessWidget {
         border: Border.all(color: palette.border),
       ),
       child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
           Container(
             padding: const EdgeInsets.all(10),
@@ -201,7 +202,7 @@ class CoMetricCard extends StatelessWidget {
             child: Icon(icon, color: color, size: 19),
           ),
           const SizedBox(width: 12),
-          Expanded(
+          Flexible(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [

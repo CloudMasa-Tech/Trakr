@@ -1,11 +1,9 @@
 import 'package:flutter/material.dart';
 
-import '../../control_plane/models/workspace_firebase_config.dart';
 import '../../control_plane/models/workspace_provision_request.dart';
 import '../../control_plane/services/workspace_provisioning_client_service.dart';
 import '../../theme/app_theme_colors.dart';
 import '../../utils/country_options.dart';
-import 'firebase_config_upload_field.dart';
 import 'portal_widgets.dart';
 import 'workspace_provisioning_progress_modal.dart';
 
@@ -60,41 +58,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
   String _selectedDialCode = '+91';
   String? _selectedIndustry;
 
-  WorkspaceFirebaseConfig? _firebaseConfig;
-  bool _firebaseMapped = false;
-
   bool _submitting = false;
-
-  final Set<int> _prereqChecked = {};
-
-  static const List<({String title, String detail})> _prereqs = [
-    (
-      title: 'Firebase project created',
-      detail: 'A project dedicated to this workspace exists in the Firebase '
-          'Console (or was created just for it).',
-    ),
-    (
-      title: 'Email/Password sign-in enabled',
-      detail: 'Firebase Console → Authentication → Sign-in method → enable '
-          'Email/Password for that project.',
-    ),
-    (
-      title: 'Cloud Firestore database created',
-      detail: 'Firestore is added to the project (create it before deploying '
-          'rules).',
-    ),
-    (
-      title: 'Firebase Web app registered',
-      detail: 'Project settings → Your apps → add a web app so appId/apiKey '
-          'exist and match the pasted configuration.',
-    ),
-    (
-      title: 'TRAKR Firestore rules deployed',
-      detail: 'Run "firebase deploy --only firestore:rules" in a clone of this '
-          'repo (after selecting the tenant project). Locked/default rules will '
-          'block the tenant admin.',
-    ),
-  ];
 
   void _refreshButtonState() {
     if (!mounted) return;
@@ -110,9 +74,6 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
     if (_phoneCtrl.text.trim().isEmpty) return false;
     if (_selectedIndustry == null) return false;
     if (_emailValidator(_adminEmailCtrl.text) != null) return false;
-    if (_firebaseConfig == null) return false;
-    if (!_firebaseMapped) return false;
-    if (_prereqChecked.length != _prereqs.length) return false;
     return true;
   }
 
@@ -155,7 +116,6 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final companyName = _nameCtrl.text.trim();
     final adminEmail = _adminEmailCtrl.text.trim();
-    final mappedProjectId = _firebaseConfig?.projectId ?? '';
 
     try {
       final result = await WorkspaceProvisioningProgressModal.show(
@@ -169,7 +129,6 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
               : _addressCtrl.text.trim(),
           industry: _selectedIndustry!,
           companyAdminEmail: adminEmail,
-          firebaseConfig: _firebaseConfig,
         ),
         initialLogId: WorkspaceProvisioningProgressModal.generateLogId(),
         provisioningClient: _provisioningClient,
@@ -187,7 +146,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
         SnackBar(
           backgroundColor: kCoGreen600,
           content: Text(
-            'Firebase project "$mappedProjectId" mapped successfully to '
+            'Firebase project "${result.firebaseProjectId}" provisioned successfully for '
             'workspace "$companyName" (workspace code: '
             '${result.workspaceCode}; dashboard: '
             '/workspace/${result.workspaceSlug}/dashboard). Login for '
@@ -242,7 +201,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
                               title: 'Workspace',
                               subtitle:
                                   'Name used for the workspace code and the '
-                                  'dedicated Firebase project.',
+                                  'automatic Firebase provisioning flow.',
                               icon: Icons.workspaces_rounded,
                               children: [
                                 _field(
@@ -316,40 +275,6 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
                                 ),
                               ],
                             ),
-                            const SizedBox(height: 18),
-                            _buildSectionCard(
-                              title: 'Firebase configuration',
-                              subtitle:
-                                  'Every workspace maps to its OWN Firebase '
-                                  'project; the TRAKR platform project stays '
-                                  'unaffected. Provide the client-side '
-                                  'configuration of the dedicated project you '
-                                  'created in the Firebase Console using the '
-                                  'NPM, CDN or Config method, run the '
-                                  'connection test, then confirm the mapping. '
-                                  'serviceAccountKey.json and private keys are '
-                                  'never accepted.',
-                              icon: Icons.cloud_outlined,
-                              children: [
-                                FirebaseConfigUploadField(
-                                  config: _firebaseConfig,
-                                  confirmed: _firebaseMapped,
-                                  enabled: !_busy,
-                                  onParsed: (config) => setState(() {
-                                    _firebaseConfig = config;
-                                    _firebaseMapped = false;
-                                  }),
-                                  onRemove: () => setState(() {
-                                    _firebaseConfig = null;
-                                    _firebaseMapped = false;
-                                  }),
-                                  onConfirmedChanged: (v) =>
-                                      setState(() => _firebaseMapped = v),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 18),
-                            _buildPrereqChecklist(),
                             const SizedBox(height: 24),
                             _buildActions(),
                           ],
@@ -437,11 +362,10 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
         ),
         SizedBox(height: 6),
         Text(
-          'Provide the Firebase configuration of the workspace\'s own project '
-          '(NPM, CDN or Config method), run the connection test, map the '
-          'detected project to this workspace, and TRAKR registers the '
-          'workspace, seeds its tenant data, and emails the first Company '
-          'Admin their login credentials.',
+          'Enter the workspace and company details, then TRAKR automatically '
+          'creates or allocates the Firebase/GCP project, configures the '
+          'tenant, seeds its data, and emails the first Company Admin their '
+          'login credentials.',
           style: TextStyle(color: kCoSubtle, fontSize: 13, height: 1.5),
         ),
       ],
@@ -505,102 +429,6 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
     );
   }
 
-  Widget _buildPrereqChecklist() {
-    final allDone = _prereqChecked.length == _prereqs.length;
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppThemeColors.darkSurface.withValues(alpha: 0.7),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: allDone ? kCoSuccess.withValues(alpha: 0.5) : kCoBorder,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(9),
-                decoration: BoxDecoration(
-                  color: (allDone ? kCoSuccess : kCoAmber)
-                      .withValues(alpha: 0.12),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  allDone
-                      ? Icons.verified_rounded
-                      : Icons.fact_check_outlined,
-                  color: allDone ? kCoSuccess : kCoAmber,
-                  size: 18,
-                ),
-              ),
-              const SizedBox(width: 12),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Tenant project readiness',
-                      style: TextStyle(
-                        color: kCoLabel,
-                        fontWeight: FontWeight.w800,
-                        fontSize: 15,
-                      ),
-                    ),
-                    SizedBox(height: 2),
-                    Text(
-                      'Manual steps completed in the Firebase Console for the '
-                      'workspace\'s own project. TRAKR cannot do these for you.',
-                      style: TextStyle(color: kCoSubtle, fontSize: 12, height: 1.4),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          for (var i = 0; i < _prereqs.length; i++) ...[
-            Material(
-              color: Colors.transparent,
-              child: CheckboxListTile(
-              value: _prereqChecked.contains(i),
-              onChanged: _busy
-                  ? null
-                  : (v) => setState(() {
-                        if (v ?? false) {
-                          _prereqChecked.add(i);
-                        } else {
-                          _prereqChecked.remove(i);
-                        }
-                      }),
-              activeColor: kCoSuccess,
-              checkColor: kCoWhite,
-              dense: true,
-              contentPadding: EdgeInsets.zero,
-              controlAffinity: ListTileControlAffinity.leading,
-              title: Text(
-                _prereqs[i].title,
-                style: const TextStyle(
-                  color: kCoLabel,
-                  fontWeight: FontWeight.w700,
-                  fontSize: 13,
-                ),
-              ),
-              subtitle: Text(
-                _prereqs[i].detail,
-                style: const TextStyle(color: kCoSubtle, fontSize: 11.5),
-              ),
-              ),
-            ),
-            if (i != _prereqs.length - 1) const Divider(height: 4, color: kCoBorder),
-          ],
-        ],
-      ),
-    );
-  }
-
   Widget _buildActions() {
     return Row(
       children: [
@@ -641,7 +469,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
             label: Text(
               _submitting
                   ? 'Provisioning…'
-                  : 'Provision workspace & create admin',
+                  : 'Create workspace',
             ),
           ),
         ),

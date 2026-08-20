@@ -9,6 +9,7 @@ import '../control_plane_firebase.dart';
 import '../models/workspace.dart';
 import '../repositories/workspace_allocation_repository.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+import '../utils/map_utils.dart';
 
 /// What a permanent workspace deletion produced.
 class WorkspaceDeletionReport {
@@ -94,7 +95,7 @@ Future<WorkspaceDeletionReport> deleteWorkspace(Workspace workspace) async {
       'confirmation': 'DELETE',
     }).timeout(const Duration(seconds: 300));
 
-    final data = result.data as Map<String, dynamic>;
+    final data = asStringKeyedMap(result.data);
     debugPrint('Cloud Function deleteWorkspace succeeded: $data');
 
     // Verify the response indicates success

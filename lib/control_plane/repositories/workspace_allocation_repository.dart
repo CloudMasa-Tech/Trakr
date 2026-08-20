@@ -27,6 +27,12 @@ class WorkspaceAllocationRepository {
 
   /// Registers (or overwrites) an allocation record for a pre-created project.
   Future<void> add(FirebaseProjectAllocation allocation) async {
+    if (allocation.projectId.trim() != allocation.firebaseConfig.projectId.trim()) {
+      throw ArgumentError(
+        'Allocation projectId must match firebaseConfig.projectId. '
+        'Got "${allocation.projectId}" vs "${allocation.firebaseConfig.projectId}".',
+      );
+    }
     await _firestore
         .collection(_collectionName)
         .doc(allocation.projectId)
