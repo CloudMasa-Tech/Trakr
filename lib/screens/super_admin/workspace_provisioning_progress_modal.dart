@@ -451,8 +451,9 @@ class _WorkspaceProvisioningProgressModalState
                     ),
                     const SizedBox(height: 3),
                     Text(
-                      'Company Admin credentials were sent to '
-                      '${widget.request.companyAdminEmail}.',
+                      _result?.emailSent == true
+                          ? "Admin invite email sent to ${widget.request.companyAdminEmail}."
+                          : "Workspace is ready, but the admin invite email was not sent. Use the resend action for ${widget.request.companyAdminEmail}.",
                       style: const TextStyle(
                           color: kCoSubtle, fontSize: 12.5, height: 1.4),
                     ),

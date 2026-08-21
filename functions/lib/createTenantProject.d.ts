@@ -36,6 +36,15 @@
  *            firestoreDbCreated, authEnabled, alreadyExisted, durationMs }
  * @throws HttpsError if not superadmin, invalid input, or any provisioning step fails
  */
+interface FirebaseWebAppConfig {
+    projectId: string;
+    appId: string;
+    apiKey: string;
+    authDomain: string;
+    messagingSenderId: string;
+    storageBucket: string;
+    measurementId?: string;
+}
 export declare const createTenantProject: import("firebase-functions/v2/https").CallableFunction<any, Promise<{
     success: boolean;
     message: string;
@@ -51,6 +60,8 @@ export declare const createTenantProject: import("firebase-functions/v2/https").
     apisEnabled: boolean;
     firestoreDbCreated: boolean;
     authEnabled: boolean;
+    firebaseConfig: FirebaseWebAppConfig;
     durationMs: number;
 }>, unknown>;
+export {};
 //# sourceMappingURL=createTenantProject.d.ts.map

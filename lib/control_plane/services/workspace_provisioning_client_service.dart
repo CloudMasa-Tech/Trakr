@@ -25,6 +25,7 @@ class WorkspaceProvisionResult {
   final String adminEmail;
   final String logId;
   final bool emailSent;
+  final String? emailError;
 
   const WorkspaceProvisionResult({
     required this.workspaceId,
@@ -35,6 +36,7 @@ class WorkspaceProvisionResult {
     required this.adminEmail,
     this.logId = '',
     required this.emailSent,
+    this.emailError,
   });
 }
 
@@ -123,6 +125,31 @@ class WorkspaceProvisioningClientService {
     return safe.isEmpty ? 'workspace' : safe;
   }
 
+  /// Finds an incomplete workspace by its normalized code or admin email.
+  /// Used by both the onboarding form and the provisioning service so every
+  /// entry point converges on the same resume behavior.
+  Future<Workspace?> findIncompleteWorkspace({
+    required String workspaceName,
+    required String adminEmail,
+  }) async {
+    final normalizedEmail = adminEmail.trim().toLowerCase();
+    final normalizedCode = workspaceName
+        .trim()
+        .toLowerCase()
+        .replaceAll(RegExp(r"[^a-z0-9]+"), "-")
+        .replaceAll(RegExp(r'^-+|-+$'), '');
+    final candidates = await _registry.listWorkspaces();
+    for (final workspace in candidates) {
+      if (workspace.status != WorkspaceStatus.provisioning) continue;
+      final codeMatches = normalizedCode.isNotEmpty &&
+          workspace.workspaceCode.trim().toLowerCase() == normalizedCode;
+      final emailMatches = normalizedEmail.isNotEmpty &&
+          (workspace.adminEmail ?? "").trim().toLowerCase() == normalizedEmail;
+      if (codeMatches || emailMatches) return workspace;
+    }
+    return null;
+  }
+
   /// Provisions [request] end to end, streaming progress into
   /// `workspace_provision_logs/{logId}`. Throws when provisioning fails; the
   /// audit log and workspace registry entry are marked `failed` first.
@@ -149,28 +176,54 @@ class WorkspaceProvisioningClientService {
     final adminPassword = _passwordsByEmail[adminEmail] ??=
         _generateAdminPassword();
 
-    // ── Retry resolution ───────────────────────────────────────────────
-    // A previous failed run for the same admin email keeps its registry entry
-    // in `provisioning` state. Reuse that entry (same workspaceId/code) so a
-    // retry resumes instead of creating a duplicate workspace with a
-    // new -2/-3 suffix. A retry also reuses the cached password so the tenant
-    // auth account created by the earlier run can be recovered.
-    final existingMatches = await _registry.listByAdminEmail(adminEmail);
+    // Resolve an explicit retry target first; otherwise discover an incomplete
+    // workspace by code OR admin email so onboarding and Continue provisioning
+    // cannot diverge.
+    final retryWorkspaceId = request.existingWorkspaceId?.trim();
+    final discoveredWorkspace = retryWorkspaceId != null && retryWorkspaceId.isNotEmpty
+        ? await _registry.resolveById(retryWorkspaceId)
+        : await findIncompleteWorkspace(
+            workspaceName: workspaceName,
+            adminEmail: adminEmail,
+          );
     String? retriedWorkspaceId;
     String? retriedWorkspaceCode;
+    Workspace? retriedWorkspace;
+    if (discoveredWorkspace != null &&
+        discoveredWorkspace.status == WorkspaceStatus.provisioning) {
+      retriedWorkspaceId = discoveredWorkspace.workspaceId;
+      retriedWorkspaceCode = discoveredWorkspace.workspaceCode;
+      retriedWorkspace = discoveredWorkspace;
+      debugPrint(
+        "WorkspaceProvisioningClientService: resuming incomplete workspace "
+        "${discoveredWorkspace.workspaceId} by code/email match.",
+      );
+    }
+
+    final existingMatches = await _registry.listByAdminEmail(adminEmail);
     for (final match in existingMatches) {
+      final isRetryTarget = retriedWorkspaceId != null &&
+          match.workspaceId == retriedWorkspaceId;
+      if (isRetryTarget) {
+        debugPrint(
+          "WorkspaceProvisioningClientService: excluding current retry workspace "
+          "${match.workspaceId} from admin-email uniqueness check.",
+        );
+        continue;
+      }
       if (match.status == WorkspaceStatus.provisioning) {
         if (retriedWorkspaceId == null ||
             match.companyName.trim().toLowerCase() ==
                 companyName.trim().toLowerCase()) {
           retriedWorkspaceId = match.workspaceId;
           retriedWorkspaceCode = match.workspaceCode;
+          retriedWorkspace = match;
         }
       } else {
         throw Exception(
-          'Admin email "$adminEmail" is already bound to an active workspace '
-          '("${match.companyName}" · ${match.workspaceCode}). Use a different '
-          'admin email.',
+          "Admin email $adminEmail is already bound to an active workspace "
+          "(${match.companyName} · ${match.workspaceCode}). Use a different "
+          "admin email.",
         );
       }
     }
@@ -192,8 +245,17 @@ class WorkspaceProvisioningClientService {
       finalWorkspaceId = generateWorkspaceIdFromCode(generatedCode);
     }
 
+    final storedProjectId = retriedWorkspace?.firebaseProjectId.trim() ?? '';
+    final storedConfigProjectId = retriedWorkspace?.firebaseConfig.projectId.trim() ?? '';
+    final retryProjectId = storedProjectId.isNotEmpty ? storedProjectId : storedConfigProjectId;
     final workspaceSlug = workspaceCode;
-    final provisionalFirebaseProjectId = workspaceCode;
+    final provisionalFirebaseProjectId = retryProjectId.isNotEmpty ? retryProjectId : workspaceCode;
+    if (retryProjectId.isNotEmpty) {
+      debugPrint(
+        'WorkspaceProvisioningClientService.provision: retry will reuse existing Firebase project '
+        '"$retryProjectId" for workspace "$finalWorkspaceId".',
+      );
+    }
     const emptyFirebaseConfig = WorkspaceFirebaseConfig(
       apiKey: '',
       appId: '',
@@ -203,13 +265,14 @@ class WorkspaceProvisioningClientService {
       authDomain: '',
     );
     var firebaseProjectId = provisionalFirebaseProjectId;
-    var firebaseConfig = emptyFirebaseConfig;
+    var firebaseConfig = retriedWorkspace?.firebaseConfig ?? emptyFirebaseConfig;
     final logId = (request.logId?.trim().isNotEmpty ?? false)
         ? request.logId!.trim()
         : generateLogId();
     final logRef = _firestore.collection('workspace_provision_logs').doc(logId);
 
     var logSeq = 0;
+    var workspaceActivated = false;
     Future<void> logLine(String message) async {
       logSeq += 1;
       try {
@@ -256,6 +319,9 @@ class WorkspaceProvisioningClientService {
         adminEmail: adminEmail,
         adminName: adminName,
         workspaceName: workspaceName,
+        companyPhone: companyPhone,
+        companyAddress: companyAddress,
+        industry: industry,
       );
       await logLine(
           'Registered workspace "$workspaceCode" in the control plane.');
@@ -265,13 +331,20 @@ class WorkspaceProvisioningClientService {
         'WorkspaceProvisioningClientService.provision: workspace registered.',
       );
 
+      debugPrint(
+        'WorkspaceProvisioningClientService: allocating Firebase project '
+        '"$firebaseProjectId" for workspace "$finalWorkspaceId".',
+      );
       final allocation = await _allocateTenantProject(
-        projectSeed: workspaceCode,
+        // On resume this is the stored project ID, never the workspace code.
+        projectSeed: firebaseProjectId,
+        workspaceCode: workspaceCode,
+        workspaceId: finalWorkspaceId,
         companyName: companyName,
       );
       firebaseProjectId = allocation.projectId;
       firebaseConfig = allocation.firebaseConfig;
-      await _firestore.collection('workspaces').doc(finalWorkspaceId).update({
+      await _registry.update(finalWorkspaceId, {
         'firebaseProjectId': firebaseProjectId,
         'firebaseConfig': firebaseConfig.toMap(),
         'firebaseConfigured': true,
@@ -290,6 +363,9 @@ class WorkspaceProvisioningClientService {
         workspaceCode: workspaceCode,
         workspaceSlug: workspaceSlug,
         companyName: companyName,
+        companyPhone: companyPhone,
+        companyAddress: companyAddress,
+        industry: industry,
         firebaseProjectId: firebaseProjectId,
         firebaseConfig: firebaseConfig,
         status: WorkspaceStatus.provisioning,
@@ -345,15 +421,21 @@ class WorkspaceProvisioningClientService {
         'WorkspaceProvisioningClientService.provision: activating workspace '
         '"$finalWorkspaceId"…',
       );
-      await _firestore.collection('workspaces').doc(finalWorkspaceId).update({
+      await _registry.update(finalWorkspaceId, {
         'status': WorkspaceStatus.active.value,
         'onboardingStatus': WorkspaceOnboardingStatus.ready.value,
         'companyId': tenant.companyId,
         'adminUid': tenant.adminUid,
         'firebaseProjectId': firebaseProjectId,
         'firebaseConfig': firebaseConfig.toMap(),
+        'adminEmailSent': tenant.adminEmailSent,
+        if (tenant.adminEmailError != null) 'adminEmailError': tenant.adminEmailError,
         'updatedAt': FieldValue.serverTimestamp(),
       });
+      workspaceActivated = true;
+      await logLine(tenant.adminEmailSent
+          ? 'Admin invite email sent successfully.'
+          : 'Admin invite email failed; workspace remains active. Manual resend is required.');
       await logLine('Workspace activated.');
       debugPrint(
         'WorkspaceProvisioningClientService.provision: workspace activated.',
@@ -374,7 +456,9 @@ class WorkspaceProvisioningClientService {
         'WorkspaceProvisioningClientService.provision: tenant login index written.',
       );
 
-      await logLine('Login credentials emailed to the Company Admin.');
+      final completionMessage = "Workspace $workspaceName provisioning complete: project=$firebaseProjectId, adminEmailSent=${tenant.adminEmailSent}";
+      debugPrint(completionMessage);
+      await logLine(completionMessage);
       await logLine('Provisioning complete.');
       await logRef.update({
         'status': 'succeeded',
@@ -393,7 +477,8 @@ class WorkspaceProvisioningClientService {
         companyId: tenant.companyId,
         adminEmail: adminEmail,
         logId: logId,
-        emailSent: true,
+        emailSent: tenant.adminEmailSent,
+        emailError: tenant.adminEmailError,
       );
     } catch (e, st) {
       final message = _errorMessage(e);
@@ -403,16 +488,21 @@ class WorkspaceProvisioningClientService {
       );
       try {
         await logRef.update({
-          'status': 'failed',
+          'status': workspaceActivated ? 'succeeded' : 'failed',
           'errorMessage': message,
+          if (workspaceActivated) 'warningMessage': message,
           'completedAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
         });
       } catch (_) {}
       try {
-        await _firestore.collection('workspaces').doc(finalWorkspaceId).update({
-          'status': WorkspaceStatus.provisioning.value,
-          'onboardingStatus': WorkspaceOnboardingStatus.failed.value,
+        await _registry.update(finalWorkspaceId, {
+          'status': workspaceActivated
+              ? WorkspaceStatus.active.value
+              : WorkspaceStatus.provisioning.value,
+          'onboardingStatus': workspaceActivated
+              ? WorkspaceOnboardingStatus.ready.value
+              : WorkspaceOnboardingStatus.failed.value,
           'error': message,
           'updatedAt': FieldValue.serverTimestamp(),
         });
@@ -424,6 +514,8 @@ class WorkspaceProvisioningClientService {
 
   Future<_TenantProjectAllocation> _allocateTenantProject({
     required String projectSeed,
+    required String workspaceCode,
+    required String workspaceId,
     required String companyName,
   }) async {
     final functions = FirebaseFunctions.instance;
@@ -431,6 +523,8 @@ class WorkspaceProvisioningClientService {
         .httpsCallable('createTenantProject', options: HttpsCallableOptions(timeout: const Duration(seconds: 540)))
         .call({
       'projectId': projectSeed,
+      'workspaceCode': workspaceCode,
+      'workspaceId': workspaceId,
       'companyName': companyName,
     }).timeout(const Duration(seconds: 540));
 
@@ -467,13 +561,19 @@ class WorkspaceProvisioningClientService {
     required String adminEmail,
     required String adminName,
     required String workspaceName,
+    required String companyPhone,
+    String? companyAddress,
+    required String industry,
   }) async {
-    await _firestore.collection('workspaces').doc(workspaceId).set({
+    final data = <String, dynamic>{
       'workspaceId': workspaceId,
       'workspaceCode': workspaceCode,
       'workspaceSlug': workspaceSlug,
       'companyName': companyName,
       'firebaseProjectId': firebaseProjectId,
+      'companyPhone': companyPhone,
+      'companyAddress': companyAddress,
+      'industry': industry,
       'firebaseConfig': firebaseConfig.toMap(),
       'firebaseConfigured': false,
       'status': WorkspaceStatus.provisioning.value,
@@ -493,7 +593,8 @@ class WorkspaceProvisioningClientService {
       'workspaceName': workspaceName,
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
-    });
+    };
+    await _registry.createDocument(workspaceId, data);
   }
 
   String _adminNameFromEmail(String email) {

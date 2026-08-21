@@ -136,13 +136,13 @@ exports.deployTenantRules = (0, https_1.onCall)({
                     `Grant it via: gcloud projects add-iam-policy-binding ${tenantProjectId} ` +
                     `--member="serviceAccount:<MASTER_SERVICE_ACCOUNT_EMAIL>" --role="roles/firebaserules.admin"`, { actionRequired: true, tenantProjectId });
             }
-            throw new https_1.HttpsError('internal', `Failed to create ruleset: ${errorText}`);
+            throw new https_1.HttpsError('internal', `deployTenantRules ruleset creation failed for ${tenantProjectId}: HTTP ${rulesetResponse.status}: ${errorText}`, { operation: 'ruleset creation', tenantProjectId, status: rulesetResponse.status, response: errorText });
         }
         const ruleset = await rulesetResponse.json();
         const rulesetName = ruleset.name;
         v2_1.logger.info('Created ruleset', { tenantProjectId, rulesetName });
         // ---- Step 2: Create Release ----
-        const releaseResponse = await fetch(`https://firebaserules.googleapis.com/v1/projects/${tenantProjectId}/releases`, {
+        let releaseResponse = await fetch(`https://firebaserules.googleapis.com/v1/projects/${tenantProjectId}/releases`, {
             method: 'POST',
             headers: {
                 'Authorization': `Bearer ${accessToken}`,
@@ -155,8 +155,19 @@ exports.deployTenantRules = (0, https_1.onCall)({
         });
         if (!releaseResponse.ok) {
             const errorText = await releaseResponse.text();
-            v2_1.logger.error('Release creation failed', { tenantProjectId, error: errorText });
-            throw new https_1.HttpsError('internal', `Failed to create release: ${errorText}`);
+            if (errorText.includes('ALREADY_EXISTS') || errorText.includes('already exists')) {
+                v2_1.logger.info('Release already exists; updating it for idempotent retry', { tenantProjectId, rulesetName });
+                releaseResponse = await fetch(`https://firebaserules.googleapis.com/v1/projects/${tenantProjectId}/releases/cloud.firestore`, {
+                    method: 'PATCH',
+                    headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rulesetName }),
+                });
+            }
+            if (!releaseResponse.ok) {
+                const updateError = releaseResponse === undefined ? errorText : await releaseResponse.text();
+                v2_1.logger.error('Release deployment failed', { tenantProjectId, status: releaseResponse.status, error: updateError, rulesetName });
+                throw new https_1.HttpsError('internal', `deployTenantRules release deployment failed for ${tenantProjectId}: HTTP ${releaseResponse.status}: ${updateError}`, { operation: 'release deployment', tenantProjectId, status: releaseResponse.status, response: updateError });
+            }
         }
         v2_1.logger.info('Released ruleset', { tenantProjectId, rulesetName });
         // ---- Step 3: Deploy Indexes ----

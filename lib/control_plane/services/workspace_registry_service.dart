@@ -162,6 +162,21 @@ class WorkspaceRegistryService {
     );
   }
 
+  /// Creates a workspace document with immutable project binding protection.
+  Future<void> createDocument(
+    String workspaceId,
+    Map<String, dynamic> data,
+  ) {
+    return _repository.createDocument(workspaceId, data);
+  }
+
+  /// Applies a guarded partial update to a workspace registry entry.
+  /// The repository transaction prevents changing a non-empty
+  /// firebaseProjectId to a different project.
+  Future<void> update(String workspaceId, Map<String, dynamic> updates) {
+    return _repository.update(workspaceId, updates);
+  }
+
   /// Updates the stored tenant firebase configuration after provisioning.
   Future<Workspace> updateFirebaseConfig(
     String workspaceId,
@@ -220,6 +235,16 @@ class WorkspaceRegistryService {
     });
     return _requireUpdated(workspaceId);
   }
+
+  /// Applies editable profile fields without replacing lifecycle or Firebase data.
+  Future<Workspace> updateDetails(
+    String workspaceId,
+    Map<String, dynamic> updates,
+  ) async {
+    await _repository.update(workspaceId, updates);
+    return _requireUpdated(workspaceId);
+  }
+
 
   /// Sets the lifecycle status of a workspace.
   Future<Workspace> setStatus(

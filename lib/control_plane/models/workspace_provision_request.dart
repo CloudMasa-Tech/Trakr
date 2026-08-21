@@ -1,23 +1,14 @@
 /// Payload for workspace provisioning from the Super Admin onboarding flow.
 /// Captures everything the platform Super Admin needs to create a brand-new
-/// tenant workspace: the workspace identity, the company basic details, and
-/// the email of the initial Company Admin (who receives login credentials).
-/// Firebase project creation and configuration are handled automatically by
-/// [WorkspaceProvisioningClientService] and the backend provisioning flow.
+/// tenant workspace and resume a prior attempt safely.
 class WorkspaceProvisionRequest {
-  /// Display name of the workspace; drives the generated workspace code.
   final String workspaceName;
-
   final String companyName;
   final String companyPhone;
   final String? companyAddress;
   final String industry;
-
-  /// Email of the initial Company Admin; login credentials are delivered here.
   final String companyAdminEmail;
-
-  /// Client-generated id of the `workspace_provision_logs` audit doc that
-  /// streams provisioning progress while the callable runs.
+  final String? existingWorkspaceId;
   final String? logId;
 
   const WorkspaceProvisionRequest({
@@ -27,19 +18,22 @@ class WorkspaceProvisionRequest {
     this.companyAddress,
     required this.industry,
     required this.companyAdminEmail,
+    this.existingWorkspaceId,
     this.logId,
   });
 
   Map<String, dynamic> toJson() {
     return {
-      'workspaceName': workspaceName,
-      'companyName': companyName,
-      'companyPhone': companyPhone,
+      "workspaceName": workspaceName,
+      "companyName": companyName,
+      "companyPhone": companyPhone,
       if (companyAddress != null && companyAddress!.isNotEmpty)
-        'companyAddress': companyAddress,
-      'industry': industry,
-      'companyAdminEmail': companyAdminEmail,
-      if (logId != null && logId!.isNotEmpty) 'logId': logId,
+        "companyAddress": companyAddress,
+      "industry": industry,
+      "companyAdminEmail": companyAdminEmail,
+      if (existingWorkspaceId != null && existingWorkspaceId!.isNotEmpty)
+        "existingWorkspaceId": existingWorkspaceId,
+      if (logId != null && logId!.isNotEmpty) "logId": logId,
     };
   }
 
@@ -51,6 +45,7 @@ class WorkspaceProvisionRequest {
       companyAddress: companyAddress,
       industry: industry,
       companyAdminEmail: companyAdminEmail,
+      existingWorkspaceId: existingWorkspaceId,
       logId: logId ?? this.logId,
     );
   }

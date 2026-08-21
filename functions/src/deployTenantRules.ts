@@ -177,7 +177,7 @@ export const deployTenantRules = onCall(
           );
         }
         
-        throw new HttpsError('internal', `Failed to create ruleset: ${errorText}`);
+        throw new HttpsError('internal', `deployTenantRules ruleset creation failed for ${tenantProjectId}: HTTP ${rulesetResponse.status}: ${errorText}`, { operation: 'ruleset creation', tenantProjectId, status: rulesetResponse.status, response: errorText });
       }
 
       const ruleset = await rulesetResponse.json() as { name: string };
@@ -185,7 +185,7 @@ export const deployTenantRules = onCall(
       logger.info('Created ruleset', { tenantProjectId, rulesetName });
 
       // ---- Step 2: Create Release ----
-      const releaseResponse = await fetch(
+      let releaseResponse = await fetch(
         `https://firebaserules.googleapis.com/v1/projects/${tenantProjectId}/releases`,
         {
           method: 'POST',
@@ -202,8 +202,19 @@ export const deployTenantRules = onCall(
 
       if (!releaseResponse.ok) {
         const errorText = await releaseResponse.text();
-        logger.error('Release creation failed', { tenantProjectId, error: errorText });
-        throw new HttpsError('internal', `Failed to create release: ${errorText}`);
+        if (errorText.includes('ALREADY_EXISTS') || errorText.includes('already exists')) {
+          logger.info('Release already exists; updating it for idempotent retry', { tenantProjectId, rulesetName });
+          releaseResponse = await fetch(`https://firebaserules.googleapis.com/v1/projects/${tenantProjectId}/releases/cloud.firestore`, {
+            method: 'PATCH',
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rulesetName }),
+          });
+        }
+        if (!releaseResponse.ok) {
+          const updateError = releaseResponse === undefined ? errorText : await releaseResponse.text();
+          logger.error('Release deployment failed', { tenantProjectId, status: releaseResponse.status, error: updateError, rulesetName });
+          throw new HttpsError('internal', `deployTenantRules release deployment failed for ${tenantProjectId}: HTTP ${releaseResponse.status}: ${updateError}`, { operation: 'release deployment', tenantProjectId, status: releaseResponse.status, response: updateError });
+        }
       }
 
       logger.info('Released ruleset', { tenantProjectId, rulesetName });

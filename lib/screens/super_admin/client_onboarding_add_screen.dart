@@ -118,17 +118,35 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
     final adminEmail = _adminEmailCtrl.text.trim();
 
     try {
+      final incompleteWorkspace =
+          await _provisioningClient.findIncompleteWorkspace(
+        workspaceName: _workspaceNameCtrl.text.trim(),
+        adminEmail: adminEmail,
+      );
+      if (incompleteWorkspace != null) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              "An incomplete workspace with this name/email already exists — "
+              "resuming it instead of creating a new one",
+            ),
+          ),
+        );
+      }
+
+      if (!mounted) return;
       final result = await WorkspaceProvisioningProgressModal.show(
         context,
         request: WorkspaceProvisionRequest(
           workspaceName: _workspaceNameCtrl.text.trim(),
           companyName: companyName,
-          companyPhone: '$_selectedDialCode ${_phoneCtrl.text.trim()}'.trim(),
+          companyPhone: "$_selectedDialCode ${_phoneCtrl.text.trim()}".trim(),
           companyAddress: _addressCtrl.text.trim().isEmpty
               ? null
               : _addressCtrl.text.trim(),
           industry: _selectedIndustry!,
           companyAdminEmail: adminEmail,
+          existingWorkspaceId: incompleteWorkspace?.workspaceId,
         ),
         initialLogId: WorkspaceProvisioningProgressModal.generateLogId(),
         provisioningClient: _provisioningClient,

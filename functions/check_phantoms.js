@@ -10,7 +10,9 @@ const db = admin.firestore();
 async function check() {
   console.log('Checking for phantom workspaces...');
   
-  const snapshot = await db.collection('workspaces').where('projectId', 'in', ['sample-4c6ce', 'sample-1e482']).get();
+  const snapshot = await db.collection('workspaces')
+    .where('gcpProjectVerified', '==', false)
+    .get();
   console.log(`Found ${snapshot.size} phantom workspace(s):`);
   for (const doc of snapshot.docs) {
     console.log(`  Workspace ID: ${doc.id}`);

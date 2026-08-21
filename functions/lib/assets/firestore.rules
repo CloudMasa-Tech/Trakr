@@ -122,6 +122,7 @@ service cloud.firestore {
           && 'email' in request.auth.token
           && request.auth.token.email != null
           && exists(/databases/$(database)/documents/app_config/admin_access)
+          && get(/databases/$(database)/documents/app_config/admin_access).data.primaryAdminEmail != null
           && get(/databases/$(database)/documents/app_config/admin_access).data.primaryAdminEmail is string
           && get(/databases/$(database)/documents/app_config/admin_access).data.primaryAdminEmail.lower() == request.auth.token.email.lower();
     }
@@ -133,13 +134,16 @@ service cloud.firestore {
     // inheritance and the app's single RBAC source of truth never disagree.
     function hasAnyPermission(uid, permissionIds) {
       let direct = exists(/databases/$(database)/documents/users/$(uid))
+          && get(/databases/$(database)/documents/users/$(uid)).data.permissionIds != null
           ? get(/databases/$(database)/documents/users/$(uid)).data.permissionIds
           : null;
       let roleId = exists(/databases/$(database)/documents/users/$(uid))
+          && get(/databases/$(database)/documents/users/$(uid)).data.roleId != null
           ? get(/databases/$(database)/documents/users/$(uid)).data.roleId
           : null;
       let rolePerms = roleId is string && roleId.size() > 0 &&
-          exists(/databases/$(database)/documents/roles/$(roleId))
+          exists(/databases/$(database)/documents/roles/$(roleId)) &&
+          get(/databases/$(database)/documents/roles/$(roleId)).data.permissionIds != null
           ? get(/databases/$(database)/documents/roles/$(roleId)).data.permissionIds
           : null;
       return signedIn() &&

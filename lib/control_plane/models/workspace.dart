@@ -88,6 +88,9 @@ class Workspace {
   /// Company industry (captured during onboarding).
   final String? industry;
 
+  /// Company postal/address details (captured during onboarding).
+  final String? companyAddress;
+
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -113,6 +116,7 @@ class Workspace {
     this.supportEmail,
     this.adminEmail,
     this.adminName,
+    this.companyAddress,
     this.companyPhone,
     this.industry,
     this.createdAt,
@@ -142,7 +146,7 @@ class Workspace {
       firestoreDbCreated: data['firestoreDbCreated'] as bool? ?? false,
       authEnabled: data['authEnabled'] as bool? ?? false,
       rulesDeployed: data['rulesDeployed'] as bool? ?? false,
-      firebaseProjectId: data['firebaseProjectId'] as String? ?? '',
+      firebaseProjectId: data['firebaseProjectId'] as String? ?? data['projectId'] as String? ?? '',
       firebaseConfig: WorkspaceFirebaseConfig.fromMap(
         Map<String, dynamic>.from(
           (data['firebaseConfig'] as Map?) ?? const <String, dynamic>{},
@@ -164,6 +168,7 @@ class Workspace {
       adminEmail: data['adminEmail'] as String?,
       adminName: data['adminName'] as String?,
       companyPhone: data['companyPhone'] as String?,
+      companyAddress: data['companyAddress'] as String?,
       industry: data['industry'] as String?,
       createdAt: _timestamp(data['createdAt']),
       updatedAt: _timestamp(data['updatedAt']),
@@ -192,6 +197,7 @@ class Workspace {
       'onboardingStatus': onboardingStatus.value,
       'subscription': subscription.toMap(),
       if (supportEmail != null) 'supportEmail': supportEmail,
+      if (companyAddress != null) 'companyAddress': companyAddress,
       if (adminEmail != null) 'adminEmail': adminEmail,
       if (adminName != null) 'adminName': adminName,
       if (companyPhone != null) 'companyPhone': companyPhone,
@@ -226,6 +232,7 @@ class Workspace {
     WorkspaceOnboardingStatus? onboardingStatus,
     Subscription? subscription,
     String? supportEmail,
+    String? companyAddress,
     String? adminEmail,
     String? adminName,
     String? companyPhone,
@@ -252,6 +259,7 @@ class Workspace {
       status: status ?? this.status,
       onboardingStatus: onboardingStatus ?? this.onboardingStatus,
       subscription: subscription ?? this.subscription,
+      companyAddress: companyAddress ?? this.companyAddress,
       supportEmail: supportEmail ?? this.supportEmail,
       adminEmail: adminEmail ?? this.adminEmail,
       adminName: adminName ?? this.adminName,

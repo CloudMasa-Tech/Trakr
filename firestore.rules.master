@@ -141,6 +141,14 @@ service cloud.firestore {
     }
 
     // ================================================================
+    // WHITE-LABEL SETTINGS — signed-in users may read, Super Admin may write
+    // ================================================================
+    match /settings/white_label {
+      allow read: if signedIn();
+      allow write: if isSuperAdmin();
+    }
+
+    // ================================================================
     // USERS — Master project user records (for Super Admin and tenant admins)
     // ================================================================
     // The Master project also has a `users` collection for platform accounts.

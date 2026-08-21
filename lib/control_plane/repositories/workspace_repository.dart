@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
 import '../../firebase/firebase_context.dart';
 import '../control_plane_firebase.dart';
@@ -21,7 +22,7 @@ class WorkspaceRepository {
   FirebaseFirestore get _firestore => _context.firestore;
 
   void _validateFirebaseProjectConsistency(Map<String, dynamic> data) {
-    final firebaseProjectId = (data['firebaseProjectId'] as String?)?.trim() ?? '';
+    final firebaseProjectId = (data['firebaseProjectId'] as String? ?? data['projectId'] as String?)?.trim() ?? '';
     final firebaseConfig = data['firebaseConfig'];
     final configProjectId = firebaseConfig is Map
         ? (firebaseConfig['projectId'] as String?)?.trim() ?? ''
@@ -102,25 +103,72 @@ class WorkspaceRepository {
 
   /// Persists a workspace registry entry (create or full overwrite).
   Future<void> create(Workspace workspace) async {
-    final data = workspace.toMap();
+    await createDocument(workspace.workspaceId, workspace.toMap());
+  }
+
+  /// Creates a workspace document without allowing an existing project binding
+  /// to be replaced. This also closes the read-then-set race during onboarding.
+  Future<void> createDocument(
+    String workspaceId,
+    Map<String, dynamic> data,
+  ) async {
     _validateFirebaseProjectConsistency(data);
-    await _firestore
-        .collection(_collectionName)
-        .doc(workspace.workspaceId)
-        .set(data);
+    final ref = _firestore.collection(_collectionName).doc(workspaceId);
+    await _firestore.runTransaction((transaction) async {
+      final current = await transaction.get(ref);
+      if (current.exists) {
+        final currentData = current.data() ?? <String, dynamic>{};
+        final oldProjectId = (currentData['firebaseProjectId'] as String? ??
+                currentData['projectId'] as String? ?? '')
+            .trim();
+        final newProjectId =
+            (data['firebaseProjectId'] as String? ?? '').trim();
+        if (oldProjectId.isNotEmpty &&
+            newProjectId.isNotEmpty &&
+            oldProjectId != newProjectId) {
+          final message =
+              'BLOCKED: attempted to overwrite firebaseProjectId for workspace '
+              '$workspaceId from $oldProjectId to $newProjectId '
+              '- this would orphan a GCP project';
+          debugPrint(message);
+          throw StateError(message);
+        }
+      }
+      transaction.set(ref, data);
+    });
   }
 
   /// Applies a partial update to a workspace entry. Always stamps `updatedAt`.
   Future<void> update(String workspaceId, Map<String, dynamic> updates) async {
     final ref = _firestore.collection(_collectionName).doc(workspaceId);
-    final current = await ref.get();
-    final merged = <String, dynamic>{
-      if (current.data() != null) ...current.data()!,
-      ...updates,
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
-    _validateFirebaseProjectConsistency(merged);
-    await ref.update(merged);
+    await _firestore.runTransaction((transaction) async {
+      final current = await transaction.get(ref);
+      final currentData = current.data() ?? <String, dynamic>{};
+      final oldProjectId = (currentData['firebaseProjectId'] as String? ??
+              currentData['projectId'] as String? ?? '')
+          .trim();
+      final requestedProjectId = updates.containsKey('firebaseProjectId')
+          ? (updates['firebaseProjectId'] as String? ?? '').trim()
+          : oldProjectId;
+      if (oldProjectId.isNotEmpty &&
+          requestedProjectId.isNotEmpty &&
+          requestedProjectId != oldProjectId) {
+        final message =
+            'BLOCKED: attempted to overwrite firebaseProjectId for workspace '
+            '$workspaceId from $oldProjectId to $requestedProjectId '
+            '- this would orphan a GCP project';
+        debugPrint(message);
+        throw StateError(message);
+      }
+
+      final merged = <String, dynamic>{
+        ...currentData,
+        ...updates,
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      _validateFirebaseProjectConsistency(merged);
+      transaction.update(ref, merged);
+    });
   }
 
   /// Deletes a workspace registry entry.

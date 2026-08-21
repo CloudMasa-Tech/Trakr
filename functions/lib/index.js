@@ -9,7 +9,7 @@
  * Test: firebase functions:shell (then call deployTenantRules({tenantProjectId: 'test-123'}))
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.deleteWorkspace = exports.createTenantProject = exports.setSuperAdminClaim = exports.deployTenantRules = void 0;
+exports.auditOrphanedTenantProjects = exports.deleteWorkspace = exports.createTenantProject = exports.setSuperAdminClaim = exports.deployTenantRules = void 0;
 var deployTenantRules_1 = require("./deployTenantRules");
 Object.defineProperty(exports, "deployTenantRules", { enumerable: true, get: function () { return deployTenantRules_1.deployTenantRules; } });
 var setSuperAdminClaim_1 = require("./setSuperAdminClaim");
@@ -18,4 +18,6 @@ var createTenantProject_1 = require("./createTenantProject");
 Object.defineProperty(exports, "createTenantProject", { enumerable: true, get: function () { return createTenantProject_1.createTenantProject; } });
 var deleteWorkspace_1 = require("./deleteWorkspace");
 Object.defineProperty(exports, "deleteWorkspace", { enumerable: true, get: function () { return deleteWorkspace_1.deleteWorkspace; } });
+var auditOrphanedTenantProjects_1 = require("./auditOrphanedTenantProjects");
+Object.defineProperty(exports, "auditOrphanedTenantProjects", { enumerable: true, get: function () { return auditOrphanedTenantProjects_1.auditOrphanedTenantProjects; } });
 //# sourceMappingURL=index.js.map

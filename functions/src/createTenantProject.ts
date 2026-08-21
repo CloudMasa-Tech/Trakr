@@ -136,6 +136,92 @@ async function getProjectIfExists(
   }
 }
 
+// ─── Helper: detect an existing incomplete workspace reservation ─────────────
+
+async function assertWorkspaceProjectIsImmutable(
+  masterApp: admin.app.App,
+  workspaceId: string,
+  requestedProjectId: string,
+): Promise<void> {
+  if (!workspaceId) return;
+
+  const ref = masterApp.firestore().collection("workspaces").doc(workspaceId);
+  const snapshot = await ref.get();
+  if (!snapshot.exists) return;
+
+  const data = snapshot.data() ?? {};
+  const config = data.firebaseConfig as Record<string, unknown> | undefined;
+  const storedProjectId = typeof data.firebaseProjectId === "string"
+    ? data.firebaseProjectId.trim()
+    : typeof config?.projectId === "string"
+      ? config.projectId.trim()
+      : "";
+  const requested = requestedProjectId.trim();
+  if (storedProjectId && requested && storedProjectId !== requested) {
+    const message =
+      `BLOCKED: attempted to overwrite firebaseProjectId for workspace ${workspaceId} ` +
+      `from ${storedProjectId} to ${requested} - this would orphan a GCP project`;
+    logger.error(message, { workspaceId, oldProjectId: storedProjectId, newProjectId: requested });
+    throw new HttpsError('failed-precondition', message, {
+      workspaceId,
+      oldProjectId: storedProjectId,
+      newProjectId: requested,
+      immutableProjectBinding: true,
+    });
+  }
+}
+
+async function findIncompleteWorkspaceByCode(
+  masterApp: admin.app.App,
+  workspaceCode: string,
+): Promise<{ workspaceId: string; projectId: string } | null> {
+  const normalizedCode = workspaceCode.trim().toLowerCase();
+  if (!normalizedCode) return null;
+
+  const snapshot = await masterApp.firestore()
+    .collection("workspaces")
+    .where("workspaceCode", "==", normalizedCode)
+    .limit(20)
+    .get();
+
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+    if (data.status !== "provisioning") continue;
+    const config = data.firebaseConfig as Record<string, unknown> | undefined;
+    const storedProjectId = typeof data.firebaseProjectId === "string"
+      ? data.firebaseProjectId.trim()
+      : typeof config?.projectId === "string"
+        ? config.projectId.trim()
+        : "";
+    if (storedProjectId) {
+      return { workspaceId: doc.id, projectId: storedProjectId };
+    }
+  }
+  return null;
+}
+
+async function findWorkspaceProjectByCode(
+  masterApp: admin.app.App,
+  workspaceCode: string,
+): Promise<{ workspaceId: string; projectId: string } | null> {
+  const normalizedCode = workspaceCode.trim().toLowerCase();
+  if (!normalizedCode) return null;
+  const snapshot = await masterApp.firestore()
+    .collection("workspaces")
+    .where("workspaceCode", "==", normalizedCode)
+    .limit(20)
+    .get();
+  for (const doc of snapshot.docs) {
+    const data = doc.data();
+    const config = data.firebaseConfig as Record<string, unknown> | undefined;
+    const projectId = typeof data.firebaseProjectId === "string"
+      ? data.firebaseProjectId.trim()
+      : typeof config?.projectId === "string" ? config.projectId.trim() : "";
+    if (projectId) return { workspaceId: doc.id, projectId };
+  }
+  return null;
+}
+
 // ─── Helper: generate collision-free project ID ─────────────────────────────
 
 async function generateUniqueProjectId(
@@ -216,7 +302,9 @@ async function withRetry<T>(
                           errorMsg.includes('FAILED_PRECONDITION') ||
                           errorMsg.includes('HTTP 409') ||
                           errorMsg.includes('has not been used') ||
-                          errorMsg.includes('SERVICE_DISABLED');
+                          errorMsg.includes('SERVICE_DISABLED') ||
+                          errorMsg.includes('createWebApp HTTP 404') ||
+                          (errorMsg.includes('Firebase project') && errorMsg.includes('not found'));
 
       if (!isTransient || attempt >= maxAttempts) {
         throw e;
@@ -618,7 +706,7 @@ async function getFirebaseWebAppConfig(
 async function enableEmailPasswordAuth(
   projectId: string,
   accessToken: string,
-): Promise<FirebaseWebAppConfig> {
+): Promise<{ config: FirebaseWebAppConfig; projectNumber: string }> {
   const initialGet = await getAuthProjectConfig(projectId, accessToken);
   if (initialGet.status !== 200 && initialGet.status !== 404) {
     throw new Error(
@@ -626,8 +714,43 @@ async function enableEmailPasswordAuth(
     );
   }
 
-  const webApp = await ensureFirebaseWebApp(projectId, accessToken);
+  // Resolve the number from the final project ID at the last possible moment.
+  // The project ID may have changed after a collision/suffix retry, so values
+  // captured during project creation are not safe for web-app provisioning.
+  const finalProject = await pollProjectActive(projectId, accessToken);
+  const finalProjectNumber = finalProject.projectNumber;
+  logger.info('Creating Firebase Web app for final project', {
+    finalProjectId: projectId,
+    projectNumber: finalProjectNumber,
+  });
+
+  const webApp = await withRetry(
+    projectId,
+    'Firebase web app provisioning',
+    () => ensureFirebaseWebApp(projectId, accessToken),
+  );
   const webAppConfig = await getFirebaseWebAppConfig(projectId, webApp.appId, accessToken);
+  const missingConfigFields = [
+    ['apiKey', webAppConfig.apiKey],
+    ['appId', webAppConfig.appId],
+    ['projectId', webAppConfig.projectId],
+    ['messagingSenderId', webAppConfig.messagingSenderId],
+  ].filter(([, value]) => !value);
+  logger.info('Firebase Web app config retrieved', {
+    projectId,
+    appId: webApp.appId,
+    configProjectId: webAppConfig.projectId,
+    hasApiKey: Boolean(webAppConfig.apiKey),
+    hasMessagingSenderId: Boolean(webAppConfig.messagingSenderId),
+    hasStorageBucket: Boolean(webAppConfig.storageBucket),
+    missingConfigFields: missingConfigFields.map(([field]) => field),
+  });
+  if (missingConfigFields.length > 0) {
+    throw new Error(
+      'Firebase Web app config is incomplete for ' + projectId + '. Missing: ' +
+      missingConfigFields.map(([field]) => field).join(', '),
+    );
+  }
   const provisionUrl = 'https://firebase.googleapis.com/v1alpha/firebase:provisionFirebaseApp';
   const provisionRequest = {
     appNamespace: webApp.appId,
@@ -666,7 +789,7 @@ async function enableEmailPasswordAuth(
       appId: webApp.appId,
       response: operation.response,
     });
-    return webAppConfig;
+    return { config: webAppConfig, projectNumber: finalProjectNumber };
   }
 
   if (!operation.name) {
@@ -684,7 +807,7 @@ async function enableEmailPasswordAuth(
     appId: webApp.appId,
     result: poll.result,
   });
-  return webAppConfig;
+  return { config: webAppConfig, projectNumber: finalProjectNumber };
 }
 
 
@@ -701,6 +824,8 @@ export const createTenantProject = onCall(
   async (request) => {
     const startTime = Date.now();
     const projectId = request.data?.projectId as string;
+    const workspaceCode = (request.data?.workspaceCode as string | undefined ?? projectId).trim().toLowerCase();
+    const workspaceId = (request.data?.workspaceId as string | undefined)?.trim() ?? "";
     const companyName = request.data?.companyName as string | undefined;
     const projectName = request.data?.projectName as string | undefined;
     const billingAccount = request.data?.billingAccount as string | undefined;
@@ -744,6 +869,58 @@ export const createTenantProject = onCall(
 
     const masterApp = initializeMasterAdmin();
     const masterProjectId = masterApp.options.projectId;
+    // A workspace's first project binding is permanent. Check the authoritative
+    // workspace document before any collision retry or GCP create call.
+    await assertWorkspaceProjectIsImmutable(masterApp, workspaceId, projectId);
+    const existingWorkspace = await findWorkspaceProjectByCode(masterApp, workspaceCode);
+    if (existingWorkspace &&
+        (!workspaceId || existingWorkspace.workspaceId !== workspaceId ||
+         existingWorkspace.projectId !== projectId)) {
+      logger.error('createTenantProject: refusing project replacement for workspace code', {
+        workspaceCode,
+        requestedWorkspaceId: workspaceId || null,
+        requestedProjectId: projectId,
+        existingWorkspaceId: existingWorkspace.workspaceId,
+        existingProjectId: existingWorkspace.projectId,
+      });
+      throw new HttpsError(
+        'already-exists',
+        'Workspace code "' + workspaceCode +
+        '" is already bound to Firebase project "' +
+        existingWorkspace.projectId +
+        '". Resume that workspace instead of creating a new project.',
+        {
+          workspaceCode,
+          existingWorkspaceId: existingWorkspace.workspaceId,
+          existingProjectId: existingWorkspace.projectId,
+          resumeRequired: true,
+        },
+      );
+    }
+
+    const reservedWorkspace = await findIncompleteWorkspaceByCode(masterApp, workspaceCode);
+    if (reservedWorkspace &&
+        (!workspaceId || reservedWorkspace.workspaceId !== workspaceId)) {
+      logger.error('createTenantProject: refusing duplicate project allocation', {
+        workspaceCode,
+        requestedWorkspaceId: workspaceId || null,
+        existingWorkspaceId: reservedWorkspace.workspaceId,
+        existingProjectId: reservedWorkspace.projectId,
+      });
+      throw new HttpsError(
+        'already-exists',
+        'Workspace code "' + workspaceCode +
+        '" already has an incomplete workspace with Firebase project "' +
+        reservedWorkspace.projectId +
+        '". Resume that workspace instead of creating a new project.',
+        {
+          workspaceCode,
+          existingWorkspaceId: reservedWorkspace.workspaceId,
+          existingProjectId: reservedWorkspace.projectId,
+          resumeRequired: true,
+        },
+      );
+    }
     if (projectId === masterProjectId) {
       throw new HttpsError('invalid-argument', 'Cannot create tenant project with master project ID');
     }
@@ -755,6 +932,7 @@ export const createTenantProject = onCall(
     let apisEnabled = false;
     let firestoreDbCreated = false;
     let authEnabled = false;
+    let firebaseConfig: FirebaseWebAppConfig;
 
     try {
       // ---- Step 0: Get Access Token ----
@@ -943,12 +1121,33 @@ export const createTenantProject = onCall(
       // ---- Step 6: Enable Email/Password auth provider ----
       try {
         logger.info('Enabling Email/Password auth provider', { projectId: finalProjectId });
-        const firebaseConfig = await enableEmailPasswordAuth(finalProjectId, accessToken);
+        const authResult = await enableEmailPasswordAuth(finalProjectId, accessToken);
+        firebaseConfig = authResult.config;
+        // Use the same fresh lookup that guarded web-app provisioning in the
+        // response, never a number captured before a project-ID retry.
+        projectNumber = authResult.projectNumber;
         authEnabled = true;
         logger.info('Email/Password auth enabled', { projectId: finalProjectId });
       } catch (e) {
         const msg = (e as Error).message;
         logger.error('Auth provider enablement failed', { projectId: finalProjectId, error: msg });
+        if (msg.includes('HTTP 429') ||
+            msg.includes('RATE_LIMIT_EXCEEDED') ||
+            msg.includes('RESOURCE_EXHAUSTED') ||
+            msg.includes('Quota exceeded')) {
+          throw new HttpsError(
+            'resource-exhausted',
+            `Firebase provisioning quota exceeded while enabling Email/Password auth on ${finalProjectId}. ` +
+            'The project, Firebase services, APIs, and Firestore database are already ready. ' +
+            'Wait at least 60 seconds before retrying; the retry will reuse this project.',
+            {
+              retryable: true,
+              retryAfterSeconds: 60,
+              failedStep: Step.AUTH_ENABLE,
+              projectId: finalProjectId,
+            },
+          );
+        }
         throw new HttpsError('internal', `Failed to enable Email/Password auth on ${finalProjectId}: ${msg}`);
       }
 

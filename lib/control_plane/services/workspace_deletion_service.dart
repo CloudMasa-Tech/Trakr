@@ -86,44 +86,51 @@ Future<WorkspaceDeletionReport> deleteWorkspace(Workspace workspace) async {
   final companyId = raw['companyId'] as String?;
   final adminUid = raw['adminUid'] as String?;
 
-  // Call the Cloud Function to delete the workspace and its GCP project
-  try {
-    final functions = FirebaseFunctions.instance;
-    final result = await functions.httpsCallable('deleteWorkspace').call({
-      'workspaceId': workspace.workspaceId,
-      'projectId': workspace.firebaseConfig.projectId,
-      'confirmation': 'DELETE',
-    }).timeout(const Duration(seconds: 300));
+  final tenantProjectId = workspace.firebaseConfig.projectId.trim().isNotEmpty
+      ? workspace.firebaseConfig.projectId.trim()
+      : workspace.firebaseProjectId.trim();
 
-    final data = asStringKeyedMap(result.data);
-    debugPrint('Cloud Function deleteWorkspace succeeded: $data');
-
-    // Verify the response indicates success
-    if (data['success'] != true) {
-      throw StateError('Cloud Function returned error: ${data['error'] ?? 'unknown error'}');
-    }
-
-    // Add any warnings from the Cloud Function
-    if (data['warnings'] is List) {
-      warnings.addAll(List<String>.from(data['warnings']));
-    }
-
-    debugPrint('WorkspaceDeletionService: Cloud Function deletion succeeded');
-
-    // Clean up control plane references (tenant_users index, project allocations, provisioning logs)
-    await _purgeControlPlane(workspace, warnings: warnings);
-
-  } on FirebaseFunctionsException catch (e) {
-    debugPrint('Cloud Function deleteWorkspace failed: ${e.code} - ${e.message}');
-    throw StateError(
-      'Failed to delete workspace via Cloud Function: ${e.message}. '
-      'Ensure the Cloud Functions are deployed and the master service account has '
-      'Project Deleter role on folder 818058604638. '
-      'Details: ${e.details}',
+  if (tenantProjectId.isEmpty) {
+    warnings.add(
+      'Skipped GCP deletion: this workspace has no Firebase project ID. '
+      'Removed the control-plane workspace record instead.',
     );
-  } catch (e) {
-    debugPrint('WorkspaceDeletionService.deleteWorkspace: error - $e');
-    rethrow;
+    await _purgeControlPlane(workspace, warnings: warnings);
+  } else {
+    // Call the Cloud Function only after validating the project identifier.
+    try {
+      final functions = FirebaseFunctions.instance;
+      final result = await functions.httpsCallable('deleteWorkspace').call({
+        'workspaceId': workspace.workspaceId,
+        'projectId': tenantProjectId,
+        'confirmation': 'DELETE',
+      }).timeout(const Duration(seconds: 300));
+
+      final data = asStringKeyedMap(result.data);
+      debugPrint('Cloud Function deleteWorkspace succeeded: $data');
+
+      if (data['success'] != true) {
+        throw StateError('Cloud Function returned error: ${data['error'] ?? 'unknown error'}');
+      }
+
+      if (data['warnings'] is List) {
+        warnings.addAll(List<String>.from(data['warnings']));
+      }
+
+      debugPrint('WorkspaceDeletionService: Cloud Function deletion succeeded');
+      await _purgeControlPlane(workspace, warnings: warnings);
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint('Cloud Function deleteWorkspace failed: ${e.code} - ${e.message}');
+      throw StateError(
+        'Failed to delete workspace via Cloud Function: ${e.message}. '
+        'Ensure the Cloud Functions are deployed and the master service account has '
+        'Project Deleter role on folder 818058604638. '
+        'Details: ${e.details}',
+      );
+    } catch (e) {
+      debugPrint('WorkspaceDeletionService.deleteWorkspace: error - $e');
+      rethrow;
+    }
   }
 
   // Clean up local tenant data references (best-effort)

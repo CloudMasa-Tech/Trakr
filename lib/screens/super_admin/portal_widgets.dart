@@ -131,12 +131,19 @@ class CoSectionCard extends StatelessWidget {
 
 class CoStatusChip extends StatelessWidget {
   final bool isActive;
+  final String? label;
+  final Color? colorOverride;
 
-  const CoStatusChip({super.key, required this.isActive});
+  const CoStatusChip({
+    super.key,
+    required this.isActive,
+    this.label,
+    this.colorOverride,
+  });
 
   @override
   Widget build(BuildContext context) {
-    final color = isActive ? kCoGreen : kCoRed;
+    final color = colorOverride ?? (isActive ? kCoGreen : kCoRed);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
@@ -152,9 +159,12 @@ class CoStatusChip extends StatelessWidget {
             Icon(Icons.circle, color: color, size: 8),
             const SizedBox(width: 6),
             Text(
-              isActive ? 'Active' : 'Suspended',
+              label ?? (isActive ? 'Active' : 'Suspended'),
               style: TextStyle(
-                  color: color, fontSize: 11, fontWeight: FontWeight.w700),
+                color: color,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ],
         ),

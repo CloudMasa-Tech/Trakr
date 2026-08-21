@@ -340,7 +340,11 @@ Future<void> _loadDetails() async {
                       ? 'Free'
                       : w.subscription.planName),
               const SizedBox(width: 8),
-              CoStatusChip(isActive: w.status == WorkspaceStatus.active),
+              CoStatusChip(
+                isActive: w.status == WorkspaceStatus.active,
+                label: w.status.label,
+                colorOverride: w.status == WorkspaceStatus.provisioning ? kCoAmber : null,
+              ),
             ],
           ),
           const SizedBox(height: 8),

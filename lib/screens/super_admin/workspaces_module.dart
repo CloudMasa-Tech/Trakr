@@ -1,14 +1,17 @@
 import 'package:flutter/material.dart';
 
 import '../../control_plane/models/workspace.dart';
+import '../../control_plane/models/workspace_provision_request.dart';
 import '../../control_plane/models/workspace_status.dart';
 import '../../control_plane/services/cross_project_analytics_service.dart';
 import '../../control_plane/services/workspace_deletion_service.dart';
+import '../../control_plane/services/workspace_provisioning_client_service.dart';
 import '../../control_plane/services/workspace_registry_service.dart';
 import '../../services/platform_service.dart';
 import '../../theme/app_theme_colors.dart';
 import 'portal_widgets.dart';
 import 'workspace_details_screen.dart';
+import 'workspace_provisioning_progress_modal.dart';
 
 class WorkspacesModule extends StatefulWidget {
   const WorkspacesModule({super.key});
@@ -22,6 +25,7 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
   final _analytics = CrossProjectAnalyticsService();
   final _platform = PlatformService();
   final _deletion = WorkspaceDeletionService();
+  final _provisioningClient = WorkspaceProvisioningClientService();
 
   final _searchCtrl = TextEditingController();
 
@@ -133,6 +137,162 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
       _snack('Could not delete workspace: $e', error: true);
     }
   }
+
+  Future<void> _retryProvisioning(Workspace workspace) async {
+    final confirmed = await _confirm(
+      title: 'Retry provisioning for ${workspace.companyName}?',
+      message: 'This will resume provisioning for the workspace using the '
+          'existing Firebase project (${workspace.firebaseProjectId}). '
+          'The Company Admin invite email will be re-sent if it failed previously.',
+      confirmLabel: 'Retry',
+      destructive: false,
+    );
+    if (!confirmed || !mounted) return;
+
+    try {
+      final request = WorkspaceProvisionRequest(
+        workspaceName: workspace.workspaceCode,
+        companyName: workspace.companyName,
+        companyPhone: workspace.companyPhone ?? '',
+        companyAddress: workspace.companyAddress,
+        industry: workspace.industry ?? '',
+        companyAdminEmail: workspace.adminEmail ?? '',
+        existingWorkspaceId: workspace.workspaceId,
+      );
+      final result = await WorkspaceProvisioningProgressModal.show(
+        context,
+        request: request,
+        initialLogId: WorkspaceProvisioningProgressModal.generateLogId(),
+        provisioningClient: _provisioningClient,
+      );
+
+      if (!mounted) return;
+      if (result != null) {
+        _snack('Provisioning completed for ${workspace.companyName}.');
+      }
+    } catch (e) {
+      if (!mounted) return;
+      _snack('Provisioning failed: $e', error: true);
+    }
+  }
+
+  Future<void> _editWorkspace(Workspace workspace) async {
+    final formKey = GlobalKey<FormState>();
+    final name = TextEditingController(text: workspace.companyName);
+    final phone = TextEditingController(text: workspace.companyPhone ?? '');
+    final address = TextEditingController(text: workspace.companyAddress ?? '');
+    final industry = TextEditingController(text: workspace.industry ?? '');
+    final adminName = TextEditingController(text: workspace.adminName ?? '');
+    final adminEmail = TextEditingController(text: workspace.adminEmail ?? '');
+    final supportEmail = TextEditingController(text: workspace.supportEmail ?? '');
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppThemeColors.darkSurface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(18),
+          side: const BorderSide(color: kCoBorder),
+        ),
+        title: Text('Edit ${workspace.companyName}',
+            style: const TextStyle(color: kCoLabel, fontWeight: FontWeight.w800)),
+        content: SizedBox(
+          width: 520,
+          child: Form(
+            key: formKey,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _workspaceEditField(name, 'Company name', required: true),
+                  _workspaceEditField(phone, 'Company phone', required: true),
+                  _workspaceEditField(address, 'Company address', maxLines: 2),
+                  _workspaceEditField(industry, 'Industry', required: true),
+                  _workspaceEditField(adminName, 'Admin name'),
+                  _workspaceEditField(adminEmail, 'Admin email', keyboardType: TextInputType.emailAddress),
+                  _workspaceEditField(supportEmail, 'Support email', keyboardType: TextInputType.emailAddress),
+                ],
+              ),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('Cancel', style: TextStyle(color: kCoSubtle)),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState?.validate() ?? false) {
+                Navigator.of(dialogContext).pop(true);
+              }
+            },
+            style: FilledButton.styleFrom(backgroundColor: kCoAccent),
+            child: const Text('Save changes'),
+          ),
+        ],
+      ),
+    );
+
+    if (saved != true || !mounted) {
+      name.dispose();
+      phone.dispose();
+      address.dispose();
+      industry.dispose();
+      adminName.dispose();
+      adminEmail.dispose();
+      supportEmail.dispose();
+      return;
+    }
+
+    try {
+      await _registry.updateDetails(workspace.workspaceId, {
+        'companyName': name.text.trim(),
+        'companyPhone': phone.text.trim(),
+        'companyAddress': address.text.trim(),
+        'industry': industry.text.trim(),
+        'adminName': adminName.text.trim(),
+        'adminEmail': adminEmail.text.trim().toLowerCase(),
+        'supportEmail': supportEmail.text.trim().toLowerCase(),
+      });
+      if (mounted) _snack('Workspace details updated.');
+    } catch (e) {
+      if (mounted) _snack('Could not update workspace: $e', error: true);
+    } finally {
+      name.dispose();
+      phone.dispose();
+      address.dispose();
+      industry.dispose();
+      adminName.dispose();
+      adminEmail.dispose();
+      supportEmail.dispose();
+    }
+  }
+
+  Widget _workspaceEditField(
+    TextEditingController controller,
+    String label, {
+    bool required = false,
+    int maxLines = 1,
+    TextInputType? keyboardType,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextFormField(
+        controller: controller,
+        maxLines: maxLines,
+        keyboardType: keyboardType,
+        style: const TextStyle(color: kCoLabel),
+        decoration: InputDecoration(labelText: label),
+        validator: required
+            ? (value) => value == null || value.trim().isEmpty
+                ? '$label is required'
+                : null
+            : null,
+      ),
+    );
+  }
+
 
   /// Shows a confirmation dialog that requires typing "DELETE" to proceed
   Future<bool> _confirmDeleteDialog(Workspace workspace) async {
@@ -611,7 +771,10 @@ else if (pageWorkspaces.isEmpty)
   }
 
   void _showUnverifiedDetails(List<Workspace> workspaces) {
-    final unverified = workspaces.where((w) => !w.gcpProjectVerified).toList();
+    final unverified = workspaces.where((w) =>
+        !w.gcpProjectVerified &&
+        w.onboardingStatus != WorkspaceOnboardingStatus.configuring &&
+        w.onboardingStatus != WorkspaceOnboardingStatus.pending).toList();
     showDialog(
       context: context,
       builder: (dialogContext) => AlertDialog(
@@ -785,6 +948,12 @@ else if (pageWorkspaces.isEmpty)
                     onTap: () => _viewWorkspace(workspace),
                   ),
                   _actionButton(
+                    icon: Icons.edit_outlined,
+                    tooltip: 'Edit workspace',
+                    color: kCoCyan,
+                    onTap: () => _editWorkspace(workspace),
+                  ),
+                  _actionButton(
                     icon: workspace.status == WorkspaceStatus.active
                         ? Icons.pause_circle_outline_rounded
                         : Icons.play_circle_outline_rounded,
@@ -802,6 +971,16 @@ else if (pageWorkspaces.isEmpty)
                     color: kCoRed,
                     onTap: () => _deleteWorkspace(workspace),
                   ),
+                  if (workspace.onboardingStatus == WorkspaceOnboardingStatus.configuring ||
+                      workspace.onboardingStatus == WorkspaceOnboardingStatus.failed)
+                    _actionButton(
+                      icon: Icons.refresh_rounded,
+                      tooltip: workspace.onboardingStatus == WorkspaceOnboardingStatus.configuring
+                          ? 'Continue provisioning'
+                          : 'Retry provisioning',
+                      color: kCoAccent,
+                      onTap: () => _retryProvisioning(workspace),
+                    ),
                 ],
               ),
             ),

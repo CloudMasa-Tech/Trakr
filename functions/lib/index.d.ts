@@ -11,4 +11,5 @@ export { deployTenantRules } from './deployTenantRules';
 export { setSuperAdminClaim } from './setSuperAdminClaim';
 export { createTenantProject } from './createTenantProject';
 export { deleteWorkspace } from './deleteWorkspace';
+export { auditOrphanedTenantProjects } from './auditOrphanedTenantProjects';
 //# sourceMappingURL=index.d.ts.map
