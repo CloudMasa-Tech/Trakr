@@ -106,36 +106,38 @@ class WorkspaceRepository {
     await createDocument(workspace.workspaceId, workspace.toMap());
   }
 
-  /// Creates a workspace document without allowing an existing project binding
-  /// to be replaced. This also closes the read-then-set race during onboarding.
+  /// Creates a workspace document (create or full overwrite).
+  ///
+  /// Projects are created manually outside of TRAKR, so the old
+  /// "orphan GCP project" overwrite guard is gone — rebinding a workspace to a
+  /// different manually created project is an operator decision, only logged.
   Future<void> createDocument(
     String workspaceId,
     Map<String, dynamic> data,
   ) async {
     _validateFirebaseProjectConsistency(data);
     final ref = _firestore.collection(_collectionName).doc(workspaceId);
-    await _firestore.runTransaction((transaction) async {
-      final current = await transaction.get(ref);
-      if (current.exists) {
-        final currentData = current.data() ?? <String, dynamic>{};
-        final oldProjectId = (currentData['firebaseProjectId'] as String? ??
-                currentData['projectId'] as String? ?? '')
-            .trim();
-        final newProjectId =
-            (data['firebaseProjectId'] as String? ?? '').trim();
-        if (oldProjectId.isNotEmpty &&
-            newProjectId.isNotEmpty &&
-            oldProjectId != newProjectId) {
-          final message =
-              'BLOCKED: attempted to overwrite firebaseProjectId for workspace '
-              '$workspaceId from $oldProjectId to $newProjectId '
-              '- this would orphan a GCP project';
-          debugPrint(message);
-          throw StateError(message);
-        }
+    final existing = await ref.get();
+    if (existing.exists) {
+      final oldProjectId = ((existing.data() ?? const <String, dynamic>{})['firebaseProjectId']
+              as String? ??
+          '').trim();
+      final newProjectId = ((data['firebaseProjectId'] ?? data['projectId']) as String? ?? '')
+          .trim();
+      if (oldProjectId.isNotEmpty &&
+          newProjectId.isNotEmpty &&
+          oldProjectId != newProjectId) {
+        debugPrint(
+          'WorkspaceRepository: overwriting workspace $workspaceId rebinds its '
+          'Firebase project from "$oldProjectId" to "$newProjectId".',
+        );
+      } else {
+        debugPrint(
+          'WorkspaceRepository: overwriting existing workspace document $workspaceId.',
+        );
       }
-      transaction.set(ref, data);
-    });
+    }
+    await ref.set(data);
   }
 
   /// Applies a partial update to a workspace entry. Always stamps `updatedAt`.
@@ -147,18 +149,15 @@ class WorkspaceRepository {
       final oldProjectId = (currentData['firebaseProjectId'] as String? ??
               currentData['projectId'] as String? ?? '')
           .trim();
-      final requestedProjectId = updates.containsKey('firebaseProjectId')
-          ? (updates['firebaseProjectId'] as String? ?? '').trim()
-          : oldProjectId;
+      final newProjectId =
+          (updates['firebaseProjectId'] as String?)?.trim() ?? '';
       if (oldProjectId.isNotEmpty &&
-          requestedProjectId.isNotEmpty &&
-          requestedProjectId != oldProjectId) {
-        final message =
-            'BLOCKED: attempted to overwrite firebaseProjectId for workspace '
-            '$workspaceId from $oldProjectId to $requestedProjectId '
-            '- this would orphan a GCP project';
-        debugPrint(message);
-        throw StateError(message);
+          newProjectId.isNotEmpty &&
+          newProjectId != oldProjectId) {
+        debugPrint(
+          'WorkspaceRepository: rebinding workspace $workspaceId from Firebase '
+          'project "$oldProjectId" to "$newProjectId".',
+        );
       }
 
       final merged = <String, dynamic>{

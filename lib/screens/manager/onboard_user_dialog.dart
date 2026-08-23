@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../../models/staff.dart';
+import '../../models/user_role.dart';
 import '../../providers/auth_session_provider.dart';
+import '../../services/access_control_service.dart';
 import '../../services/email_service.dart';
 import '../../services/manager_account_service.dart';
 import '../../services/notification_service.dart';
@@ -52,6 +54,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   final _formKey = GlobalKey<FormState>();
   final _staffService = StaffService();
   final _managerAccountService = ManagerAccountService();
+  final _accessControl = AccessControlService();
 
   final _nameCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
@@ -77,7 +80,15 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   bool _pickingPhoto = false;
   String? _photoUrl;
 
-  AppUserRole _assignedRole = AppUserRole.employee;
+  /// The role selected from the User Roles Management catalog (`roles`
+  /// collection). System/protected roles (e.g. Company Admin) are excluded
+  /// from selection both in the UI and in [_submit].
+  UserRole? _selectedUserRole;
+
+  AppUserRole get _assignedRole =>
+      (_selectedUserRole?.isManagerial ?? false)
+          ? AppUserRole.manager
+          : AppUserRole.employee;
   String? _selectedDepartment;
 
   String? _selectedManagerName;
@@ -201,6 +212,20 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     if (_submitting) return;
     if (!_formKey.currentState!.validate()) return;
 
+    final selectedRole = _selectedUserRole;
+    if (selectedRole == null) {
+      _showError('Please select a role.');
+      return;
+    }
+    // Domain-level guard: protected/system roles (Company Admin) can never be
+    // assigned through onboarding, even if a crafted request bypasses the UI.
+    if (selectedRole.isSystem ||
+        selectedRole.id.trim().toLowerCase() == 'company_admin') {
+      _showError(
+          'The Company Admin role is system-protected and cannot be assigned '
+          'during onboarding.');
+      return;
+    }
     if (_assignedRole == AppUserRole.manager && !_canAssignManager) {
       _showError('Only admins can onboard a manager.');
       return;
@@ -256,7 +281,8 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
       if (_assignedRole == AppUserRole.employee) {
         final emailTaken = await _staffService.isEmailAlreadyUsed(email);
         if (emailTaken) {
-          _showError('An engineer with this email already exists.');
+          _showError(
+              'A user with this email already exists as ${selectedRole.name}.');
           setState(() => _submitting = false);
           return;
         }
@@ -281,6 +307,11 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
           nationality: nationality,
           dob: _dob,
           address: _addressCtrl.text.trim(),
+          // Persist the selected role from User Roles Management.
+          role: 'staff',
+          roleId: selectedRole.id,
+          roleName: selectedRole.name,
+          roleLevel: selectedRole.level,
         );
 
         await _staffService.addStaff(staff);
@@ -314,6 +345,10 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             nationality: nationality,
             dob: _dob,
             address: _addressCtrl.text.trim(),
+            // Persist the selected managerial role from User Roles Management.
+            roleId: selectedRole.id,
+            roleName: selectedRole.name,
+            roleLevel: selectedRole.level,
           );
         } else {
           await managers.add({
@@ -332,6 +367,9 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             'hasRegistered': false,
             'createdAt': FieldValue.serverTimestamp(),
             'updatedAt': FieldValue.serverTimestamp(),
+            'roleId': selectedRole.id,
+            'roleName': selectedRole.name,
+            'roleLevel': selectedRole.level,
             'bloodGroup': _selectedBloodGroup,
             'gender': _selectedGender,
             'nationality': nationality,
@@ -346,8 +384,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
           await EmailService.sendAccountCredentials(
             recipientEmail: email,
             password: password,
-            roleLabel:
-                _assignedRole == AppUserRole.manager ? 'manager' : 'employee',
+            roleLabel: selectedRole.name.toLowerCase(),
             recipientName: name,
           );
           emailSent = true;
@@ -402,7 +439,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
               emailError == null ? Colors.green.shade600 : Colors.orange,
           content: Text(
             !_isActive
-                ? 'Onboarded $name as ${_assignedRole.label}. Login access is disabled.'
+                ? 'Onboarded $name as ${selectedRole.name}. Login access is disabled.'
                 : emailSent
                     ? 'Created login for $email and sent the credentials by email.'
                     : 'Created login for $email, but email was not sent. $emailError',
@@ -790,61 +827,151 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     );
   }
 
+  /// Roles assignable during onboarding: everything from the User Roles
+  /// Management catalog EXCEPT protected system roles (Company Admin).
+  /// Guarded by flag AND by id so a mis-flagged company_admin can never slip
+  /// through, and enforced again at submit time.
+  List<UserRole> _assignableRoles(List<UserRole> all) {
+    return all
+        .where((r) =>
+            !r.isSystem &&
+            r.id.trim().toLowerCase() != 'company_admin')
+        .toList()
+      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+  }
+
   Widget _buildRoleChooser() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _fieldLabel('Assign role', required: true),
-        const SizedBox(height: 8),
-        LayoutBuilder(
-          builder: (context, c) {
-            final stack = c.maxWidth < 480;
-            final tiles = [
-              _RoleTile(
-                role: AppUserRole.employee,
-                title: 'Engineer',
-                subtitle: 'Reports to a manager. Scans QR for attendance.',
-                icon: Icons.engineering_rounded,
-                selected: _assignedRole == AppUserRole.employee,
-                enabled: !_submitting,
-                onTap: () =>
-                    setState(() => _assignedRole = AppUserRole.employee),
-              ),
-              _RoleTile(
-                role: AppUserRole.manager,
-                title: 'Manager',
-                subtitle: _canAssignManager
-                    ? 'Manages a team of engineers.'
-                    : 'Only admins can onboard managers.',
-                icon: Icons.supervisor_account_rounded,
-                selected: _assignedRole == AppUserRole.manager,
-                enabled: !_submitting && _canAssignManager,
-                onTap: () =>
-                    setState(() => _assignedRole = AppUserRole.manager),
-              ),
-            ];
-            if (stack) {
-              return Column(
-                children: [
-                  tiles[0],
-                  const SizedBox(height: 10),
-                  tiles[1],
-                ],
-              );
+    return StreamBuilder<List<UserRole>>(
+      stream: _accessControl.getAllRoles(),
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return const Text(
+            'Could not load roles. Please retry.',
+            style: TextStyle(color: Colors.redAccent, fontSize: 12),
+          );
+        }
+        final all = snapshot.data ?? const <UserRole>[];
+        final roles = _assignableRoles(all);
+
+        // Default the selection to the seeded employee role (or the first
+        // available) exactly once, mirroring the previous default behaviour.
+        if (_selectedUserRole == null && roles.isNotEmpty) {
+          UserRole? initial;
+          for (final r in roles) {
+            if (r.id == 'employee') {
+              initial = r;
+              break;
             }
-            return IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  Expanded(child: tiles[0]),
-                  const SizedBox(width: 12),
-                  Expanded(child: tiles[1]),
-                ],
+          }
+          _selectedUserRole = initial ?? roles.first;
+        }
+
+        // Drop a stale selection if the role was deleted while the dialog is
+        // open (User Roles Management is live in another tab/session).
+        final selected = _selectedUserRole;
+        if (selected != null && !roles.any((r) => r.id == selected.id)) {
+          _selectedUserRole =
+              roles.any((r) => r.id == 'employee')
+                  ? roles.firstWhere((r) => r.id == 'employee')
+                  : (roles.isNotEmpty ? roles.first : null);
+        }
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _fieldLabel('Assign role', required: true),
+            const SizedBox(height: 8),
+            if (!snapshot.hasData)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 14),
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              )
+            else if (roles.isEmpty)
+              const Text(
+                'No assignable roles configured. Create roles in '
+                'User Roles Management first.',
+                style: TextStyle(color: _subtle, fontSize: 12),
+              )
+            else
+              LayoutBuilder(
+                builder: (context, c) {
+                  final stack = c.maxWidth < 480;
+                  final tiles = [
+                    for (final role in roles)
+                      _RoleTile(
+                        title: role.name,
+                        subtitle: role.description.trim().isNotEmpty
+                            ? role.description
+                            : (role.isManagerial
+                                ? 'Manages a team.'
+                                : 'Individual contributor role.'),
+                        icon: role.isManagerial
+                            ? Icons.supervisor_account_rounded
+                            : Icons.engineering_rounded,
+                        selected: _selectedUserRole?.id == role.id,
+                        enabled:
+                            !_submitting && (!role.isManagerial || _canAssignManager),
+                        onTap: () => setState(() => _selectedUserRole = role),
+                      ),
+                  ];
+                  if (stack) {
+                    return Column(
+                      children: [
+                        for (var i = 0; i < tiles.length; i++) ...[
+                          if (i > 0) const SizedBox(height: 10),
+                          tiles[i],
+                        ],
+                      ],
+                    );
+                  }
+                  // Two-column card grid, matching the existing style.
+                  final rows = <Widget>[];
+                  for (var i = 0; i < tiles.length; i += 2) {
+                    rows.add(
+                      IntrinsicHeight(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            Expanded(child: tiles[i]),
+                            if (i + 1 < tiles.length) ...[
+                              const SizedBox(width: 12),
+                              Expanded(child: tiles[i + 1]),
+                            ] else ...[
+                              const SizedBox(width: 12),
+                              const Expanded(child: SizedBox()),
+                            ],
+                          ],
+                        ),
+                      ),
+                    );
+                  }
+                  return Column(
+                    children: [
+                      for (var i = 0; i < rows.length; i++) ...[
+                        if (i > 0) const SizedBox(height: 10),
+                        rows[i],
+                      ],
+                    ],
+                  );
+                },
               ),
-            );
-          },
-        ),
-      ],
+            // Managerial-role gating hint (admins only), as before.
+            if (_selectedUserRole?.isManagerial ?? false)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  'Manages a team of engineers.'
+                  '${_canAssignManager ? '' : ' Only admins can onboard managers.'}',
+                  style: const TextStyle(color: _subtle, fontSize: 11),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -1424,7 +1551,6 @@ class _ManagerOption {
 }
 
 class _RoleTile extends StatelessWidget {
-  final AppUserRole role;
   final String title;
   final String subtitle;
   final IconData icon;
@@ -1438,7 +1564,6 @@ class _RoleTile extends StatelessWidget {
   static const _subtle = AppThemeColors.darkMuted;
 
   const _RoleTile({
-    required this.role,
     required this.title,
     required this.subtitle,
     required this.icon,

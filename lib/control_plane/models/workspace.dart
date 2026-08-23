@@ -60,6 +60,11 @@ class Workspace {
   /// Credentials/options for the tenant Firebase project.
   final WorkspaceFirebaseConfig firebaseConfig;
 
+  /// The Firebase billing plan selected for the manually created tenant
+  /// project: 'spark' or 'blaze'. Informational only — TRAKR never changes
+  /// the actual plan via API. Empty for legacy workspaces.
+  final String firebasePlan;
+
   /// Whether the tenant Firebase project has been mapped to this workspace by
   /// the Super Admin (client config uploaded, validated and confirmed).
   final bool firebaseConfigured;
@@ -107,8 +112,9 @@ class Workspace {
     this.firestoreDbCreated = false,
     this.authEnabled = false,
     this.rulesDeployed = false,
-    required this.firebaseProjectId,
+    this.firebaseProjectId = '',
     required this.firebaseConfig,
+    this.firebasePlan = '',
     this.firebaseConfigured = false,
     this.status = WorkspaceStatus.provisioning,
     this.onboardingStatus = WorkspaceOnboardingStatus.pending,
@@ -152,6 +158,7 @@ class Workspace {
           (data['firebaseConfig'] as Map?) ?? const <String, dynamic>{},
         ),
       ),
+      firebasePlan: data['firebasePlan'] as String? ?? '',
       firebaseConfigured: data['firebaseConfigured'] as bool? ??
           _configCarriesCredentials(data['firebaseConfig']),
       status: WorkspaceStatus.fromValue(data['status'] as String?) ??
@@ -190,8 +197,9 @@ class Workspace {
       'firestoreDbCreated': firestoreDbCreated,
       'authEnabled': authEnabled,
       'rulesDeployed': rulesDeployed,
-      'firebaseProjectId': firebaseProjectId,
+      'firebaseProjectId': firebaseProjectId.isNotEmpty ? firebaseProjectId : null,
       'firebaseConfig': firebaseConfig.toMap(),
+      if (firebasePlan.isNotEmpty) 'firebasePlan': firebasePlan,
       'firebaseConfigured': firebaseConfigured,
       'status': status.value,
       'onboardingStatus': onboardingStatus.value,
@@ -212,6 +220,16 @@ class Workspace {
   /// The name used for the tenant [FirebaseApp] (see FirebaseManager).
   String get appName => workspaceId;
 
+  /// Derived operational health, computed from onboarding status and the
+  /// provisioning flags. Never stored — always derived at read time.
+  WorkspaceHealth get health => WorkspaceHealth.derive(
+        isActive: status == WorkspaceStatus.active,
+        onboardingStatus: onboardingStatus.value,
+        rulesDeployed: rulesDeployed,
+        authEnabled: authEnabled,
+        firestoreDbCreated: firestoreDbCreated,
+      );
+
   Workspace copyWith({
     String? workspaceId,
     String? workspaceCode,
@@ -227,6 +245,7 @@ class Workspace {
     bool? rulesDeployed,
     String? firebaseProjectId,
     WorkspaceFirebaseConfig? firebaseConfig,
+    String? firebasePlan,
     bool? firebaseConfigured,
     WorkspaceStatus? status,
     WorkspaceOnboardingStatus? onboardingStatus,
@@ -255,6 +274,7 @@ class Workspace {
       rulesDeployed: rulesDeployed ?? this.rulesDeployed,
       firebaseProjectId: firebaseProjectId ?? this.firebaseProjectId,
       firebaseConfig: firebaseConfig ?? this.firebaseConfig,
+      firebasePlan: firebasePlan ?? this.firebasePlan,
       firebaseConfigured: firebaseConfigured ?? this.firebaseConfigured,
       status: status ?? this.status,
       onboardingStatus: onboardingStatus ?? this.onboardingStatus,

@@ -104,8 +104,15 @@ class WorkspaceRegistryService {
   Future<Workspace> registerWorkspace({
     required String companyName,
     required String workspaceCode,
-    required String firebaseProjectId,
-    required WorkspaceFirebaseConfig firebaseConfig,
+    String? firebaseProjectId,
+    WorkspaceFirebaseConfig firebaseConfig = const WorkspaceFirebaseConfig(
+      apiKey: '',
+      appId: '',
+      projectId: '',
+      messagingSenderId: '',
+      storageBucket: '',
+      authDomain: '',
+    ),
     Subscription subscription = const Subscription.empty(),
     String? supportEmail,
     String? workspaceId,
@@ -115,10 +122,14 @@ class WorkspaceRegistryService {
         'A workspace already exists with code "$workspaceCode".',
       );
     }
-    if (firebaseProjectId.trim() != firebaseConfig.projectId.trim()) {
+    final normalizedProjectId = firebaseProjectId?.trim() ?? '';
+    final normalizedConfigProjectId = firebaseConfig.projectId.trim();
+    if (normalizedProjectId.isNotEmpty &&
+        normalizedConfigProjectId.isNotEmpty &&
+        normalizedProjectId != normalizedConfigProjectId) {
       throw StateError(
-        'Workspace Firebase project mismatch: firebaseProjectId="$firebaseProjectId'
-        '" does not match firebaseConfig.projectId="$firebaseConfig.projectId". '
+        'Workspace Firebase project mismatch: firebaseProjectId="$normalizedProjectId'
+        '" does not match firebaseConfig.projectId="$normalizedConfigProjectId". '
         'Refuse to register inconsistent workspace data.',
       );
     }
@@ -130,7 +141,7 @@ class WorkspaceRegistryService {
       workspaceId: id,
       workspaceCode: workspaceCode,
       companyName: companyName,
-      firebaseProjectId: firebaseProjectId,
+      firebaseProjectId: normalizedProjectId,
       firebaseConfig: firebaseConfig,
       status: WorkspaceStatus.provisioning,
       onboardingStatus: WorkspaceOnboardingStatus.pending,

@@ -37,10 +37,44 @@
  *            firestoreDbCreated, authEnabled, alreadyExisted, durationMs }
  * @throws HttpsError if not superadmin, invalid input, or any provisioning step fails
  */
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.createTenantProject = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const v2_1 = require("firebase-functions/v2");
+const admin = __importStar(require("firebase-admin"));
 const firebaseAdmin_1 = require("./lib/firebaseAdmin");
 // Folder ID where tenant projects will be created
 const TENANT_FOLDER_ID = '818058604638';
@@ -136,7 +170,11 @@ async function assertWorkspaceProjectIsImmutable(masterApp, workspaceId, request
             ? config.projectId.trim()
             : "";
     const requested = requestedProjectId.trim();
-    if (storedProjectId && requested && storedProjectId !== requested) {
+    const workspaceCode = typeof data.workspaceCode === "string" ? data.workspaceCode.trim().toLowerCase() : "";
+    const isPlaceholder = !storedProjectId ||
+        storedProjectId === workspaceId ||
+        storedProjectId === workspaceCode;
+    if (!isPlaceholder && requested && storedProjectId !== requested) {
         const message = `BLOCKED: attempted to overwrite firebaseProjectId for workspace ${workspaceId} ` +
             `from ${storedProjectId} to ${requested} - this would orphan a GCP project`;
         v2_1.logger.error(message, { workspaceId, oldProjectId: storedProjectId, newProjectId: requested });
@@ -167,7 +205,10 @@ async function findIncompleteWorkspaceByCode(masterApp, workspaceCode) {
             : typeof config?.projectId === "string"
                 ? config.projectId.trim()
                 : "";
-        if (storedProjectId) {
+        const isPlaceholder = !storedProjectId ||
+            storedProjectId === doc.id ||
+            storedProjectId === normalizedCode;
+        if (storedProjectId && !isPlaceholder) {
             return { workspaceId: doc.id, projectId: storedProjectId };
         }
     }
@@ -188,15 +229,49 @@ async function findWorkspaceProjectByCode(masterApp, workspaceCode) {
         const projectId = typeof data.firebaseProjectId === "string"
             ? data.firebaseProjectId.trim()
             : typeof config?.projectId === "string" ? config.projectId.trim() : "";
-        if (projectId)
+        const isPlaceholder = !projectId ||
+            projectId === doc.id ||
+            projectId === normalizedCode;
+        if (projectId && !isPlaceholder)
             return { workspaceId: doc.id, projectId };
     }
     return null;
 }
 // ─── Helper: generate collision-free project ID ─────────────────────────────
+async function findExistingProjectByPrefix(baseProjectId, accessToken) {
+    try {
+        const url = `https://cloudresourcemanager.googleapis.com/v3/projects?pageSize=300&filter=parent.type:folder%20parent.id:${TENANT_FOLDER_ID}`;
+        const resp = await fetch(url, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+        });
+        if (!resp.ok)
+            return null;
+        const data = await resp.json();
+        const prefix = `${baseProjectId}-`;
+        const matching = (data.projects ?? []).filter((p) => p.projectId && p.projectId.startsWith(prefix) && p.state === 'ACTIVE');
+        if (matching.length > 0) {
+            const chosen = matching[matching.length - 1].projectId;
+            v2_1.logger.info('Found existing active project under managed folder matching prefix', {
+                baseProjectId,
+                chosenProjectId: chosen,
+                matchCount: matching.length,
+            });
+            return chosen;
+        }
+        return null;
+    }
+    catch (err) {
+        v2_1.logger.warn('Failed to query existing projects by prefix', { baseProjectId, error: err.message });
+        return null;
+    }
+}
 async function generateUniqueProjectId(baseProjectId, accessToken) {
     const existing = await getProjectIfExists(baseProjectId, accessToken);
     if (!existing) {
+        const prefixMatch = await findExistingProjectByPrefix(baseProjectId, accessToken);
+        if (prefixMatch) {
+            return { finalId: prefixMatch, alreadyExisted: true };
+        }
         return { finalId: baseProjectId, alreadyExisted: false };
     }
     if (existing.state === 'ACTIVE') {
@@ -205,7 +280,11 @@ async function generateUniqueProjectId(baseProjectId, accessToken) {
             v2_1.logger.info('Project already exists under managed folder', { projectId: baseProjectId });
             return { finalId: baseProjectId, alreadyExisted: true };
         }
-        // Collision with a project outside our folder — generate new ID with suffix
+        // Collision with a project outside our folder — check if we already created one in our folder
+        const prefixMatch = await findExistingProjectByPrefix(baseProjectId, accessToken);
+        if (prefixMatch) {
+            return { finalId: prefixMatch, alreadyExisted: true };
+        }
         v2_1.logger.warn('Project ID collision - generating new ID', {
             originalId: baseProjectId,
             existingParent: existing.parent,
@@ -213,12 +292,17 @@ async function generateUniqueProjectId(baseProjectId, accessToken) {
         });
     }
     else if (existing.state === 'DELETE_REQUESTED' || existing.state === 'DELETE_IN_PROGRESS') {
-        // GCP project IDs stay reserved for 30 days after deletion (state DELETE_REQUESTED).
-        // We cannot adopt them, so we must generate a new ID.
+        const prefixMatch = await findExistingProjectByPrefix(baseProjectId, accessToken);
+        if (prefixMatch) {
+            return { finalId: prefixMatch, alreadyExisted: true };
+        }
         v2_1.logger.info(`Project ID ${baseProjectId} is soft-deleted (grace period), generating a new ID`, { projectId: baseProjectId, state: existing.state });
     }
     else {
-        // Any other/unknown state: be conservative and treat as unusable
+        const prefixMatch = await findExistingProjectByPrefix(baseProjectId, accessToken);
+        if (prefixMatch) {
+            return { finalId: prefixMatch, alreadyExisted: true };
+        }
         v2_1.logger.warn(`Project ID ${baseProjectId} is in unknown state (${existing.state}), treating as unusable`, { projectId: baseProjectId });
     }
     for (let attempt = 0; attempt < MAX_COLLISION_RETRIES; attempt++) {
@@ -255,6 +339,10 @@ async function withRetry(projectId, stepName, operation, maxAttempts = 10) {
             const isTransient = errorMsg.includes('transient state') ||
                 errorMsg.includes('FAILED_PRECONDITION') ||
                 errorMsg.includes('HTTP 409') ||
+                errorMsg.includes('HTTP 429') ||
+                errorMsg.includes('RESOURCE_EXHAUSTED') ||
+                errorMsg.includes('RATE_LIMIT_EXCEEDED') ||
+                errorMsg.includes('Quota exceeded') ||
                 errorMsg.includes('has not been used') ||
                 errorMsg.includes('SERVICE_DISABLED') ||
                 errorMsg.includes('createWebApp HTTP 404') ||
@@ -266,6 +354,10 @@ async function withRetry(projectId, stepName, operation, maxAttempts = 10) {
             let reason = 'transient error';
             if (errorMsg.includes('has not been used') || errorMsg.includes('SERVICE_DISABLED')) {
                 reason = 'Propagation delay detected (API not yet active)';
+            }
+            else if (errorMsg.includes('HTTP 429') || errorMsg.includes('RESOURCE_EXHAUSTED') || errorMsg.includes('RATE_LIMIT_EXCEEDED') || errorMsg.includes('Quota exceeded')) {
+                reason = 'Google API rate limit (auto-waiting for quota reset)';
+                delayMs = Math.max(delayMs, 5000);
             }
             v2_1.logger.warn(`${stepName} ${reason} on ${projectId}, retrying in ${delayMs / 1000}s (attempt ${attempt}/${maxAttempts}, total elapsed ${elapsedSec}s)`, { projectId, error: errorMsg });
             await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -320,7 +412,32 @@ async function pollOperation(operationUrl, accessToken, maxAttempts = 60, interv
     return { done: false, error: `Operation timed out after ${(maxAttempts * intervalMs) / 1000}s` };
 }
 // ─── Helper: enable Firebase on project (wait for completion) ──────────────
+async function isFirebaseAlreadyEnabled(projectId, accessToken) {
+    try {
+        const url = `https://firebase.googleapis.com/v1beta1/projects/${projectId}`;
+        const resp = await fetch(url, {
+            method: 'GET',
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+            },
+        });
+        if (resp.ok) {
+            const data = await resp.json();
+            return data.state === 'ACTIVE' || !data.state;
+        }
+        return false;
+    }
+    catch {
+        return false;
+    }
+}
 async function enableFirebaseOnProject(projectId, accessToken) {
+    const alreadyEnabled = await isFirebaseAlreadyEnabled(projectId, accessToken);
+    if (alreadyEnabled) {
+        v2_1.logger.info(`Firebase is already enabled on ${projectId}, skipping addFirebase call.`, { projectId });
+        return;
+    }
     const url = `https://firebase.googleapis.com/v1beta1/projects/${projectId}:addFirebase`;
     const resp = await fetch(url, {
         method: 'POST',
@@ -548,6 +665,36 @@ async function getFirebaseWebAppConfig(projectId, appId, accessToken) {
         measurementId: data.measurementId,
     };
 }
+async function enableEmailAuthDirect(projectId, accessToken) {
+    try {
+        const url = `https://identitytoolkit.googleapis.com/admin/v2/projects/${projectId}/config?updateMask=signIn.email.enabled`;
+        const resp = await fetch(url, {
+            method: 'PATCH',
+            headers: {
+                Authorization: `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                signIn: {
+                    email: {
+                        enabled: true,
+                    },
+                },
+            }),
+        });
+        if (resp.ok) {
+            v2_1.logger.info('Email/Password auth enabled via Identity Toolkit admin API fallback', { projectId });
+            return true;
+        }
+        const errText = await resp.text();
+        v2_1.logger.warn('Identity Toolkit admin API patch fallback failed', { projectId, status: resp.status, error: errText });
+        return false;
+    }
+    catch (err) {
+        v2_1.logger.warn('Identity Toolkit admin API patch fallback threw error', { projectId, error: err.message });
+        return false;
+    }
+}
 async function enableEmailPasswordAuth(projectId, accessToken) {
     const initialGet = await getAuthProjectConfig(projectId, accessToken);
     if (initialGet.status !== 200 && initialGet.status !== 404) {
@@ -583,6 +730,11 @@ async function enableEmailPasswordAuth(projectId, accessToken) {
         throw new Error('Firebase Web app config is incomplete for ' + projectId + '. Missing: ' +
             missingConfigFields.map(([field]) => field).join(', '));
     }
+    // If already enabled, return immediately without consuming quota.
+    if (initialGet.status === 200 && initialGet.config?.signIn?.email?.enabled === true) {
+        v2_1.logger.info('Email/Password auth is already enabled on project', { projectId });
+        return { config: webAppConfig, projectNumber: finalProjectNumber };
+    }
     const provisionUrl = 'https://firebase.googleapis.com/v1alpha/firebase:provisionFirebaseApp';
     const provisionRequest = {
         appNamespace: webApp.appId,
@@ -608,6 +760,15 @@ async function enableEmailPasswordAuth(projectId, accessToken) {
     });
     if (!resp.ok) {
         const errText = await resp.text();
+        v2_1.logger.warn('firebase:provisionFirebaseApp failed, attempting direct Identity Toolkit fallback', {
+            projectId,
+            status: resp.status,
+            error: errText,
+        });
+        const fallbackSuccess = await enableEmailAuthDirect(projectId, accessToken);
+        if (fallbackSuccess) {
+            return { config: webAppConfig, projectNumber: finalProjectNumber };
+        }
         throw new Error('firebase:provisionFirebaseApp HTTP ' + resp.status + ': ' + errText);
     }
     const operation = await resp.json();
@@ -625,6 +786,14 @@ async function enableEmailPasswordAuth(projectId, accessToken) {
     const operationUrl = 'https://firebase.googleapis.com/v1beta1/' + operation.name;
     const poll = await pollOperation(operationUrl, accessToken, 40, 3000);
     if (poll.error) {
+        v2_1.logger.warn('firebase:provisionFirebaseApp polling failed, attempting direct Identity Toolkit fallback', {
+            projectId,
+            error: poll.error,
+        });
+        const fallbackSuccess = await enableEmailAuthDirect(projectId, accessToken);
+        if (fallbackSuccess) {
+            return { config: webAppConfig, projectNumber: finalProjectNumber };
+        }
         throw new Error('firebase:provisionFirebaseApp failed: ' + poll.error);
     }
     v2_1.logger.info('Email/Password auth provisioned', {
@@ -643,7 +812,7 @@ exports.createTenantProject = (0, https_1.onCall)({
     timeoutSeconds: 540,
 }, async (request) => {
     const startTime = Date.now();
-    const projectId = request.data?.projectId;
+    let projectId = request.data?.projectId;
     const workspaceCode = (request.data?.workspaceCode ?? projectId).trim().toLowerCase();
     const workspaceId = request.data?.workspaceId?.trim() ?? "";
     const companyName = request.data?.companyName;
@@ -683,44 +852,65 @@ exports.createTenantProject = (0, https_1.onCall)({
     // workspace document before any collision retry or GCP create call.
     await assertWorkspaceProjectIsImmutable(masterApp, workspaceId, projectId);
     const existingWorkspace = await findWorkspaceProjectByCode(masterApp, workspaceCode);
-    if (existingWorkspace &&
-        (!workspaceId || existingWorkspace.workspaceId !== workspaceId ||
-            existingWorkspace.projectId !== projectId)) {
-        v2_1.logger.error('createTenantProject: refusing project replacement for workspace code', {
-            workspaceCode,
-            requestedWorkspaceId: workspaceId || null,
-            requestedProjectId: projectId,
-            existingWorkspaceId: existingWorkspace.workspaceId,
-            existingProjectId: existingWorkspace.projectId,
-        });
-        throw new https_1.HttpsError('already-exists', 'Workspace code "' + workspaceCode +
-            '" is already bound to Firebase project "' +
-            existingWorkspace.projectId +
-            '". Resume that workspace instead of creating a new project.', {
-            workspaceCode,
-            existingWorkspaceId: existingWorkspace.workspaceId,
-            existingProjectId: existingWorkspace.projectId,
-            resumeRequired: true,
-        });
+    if (existingWorkspace) {
+        if (workspaceId && existingWorkspace.workspaceId === workspaceId) {
+            if (existingWorkspace.projectId && existingWorkspace.projectId !== projectId) {
+                v2_1.logger.info('createTenantProject: adopting already-bound project ID for workspace', {
+                    workspaceId,
+                    originalRequestedId: projectId,
+                    boundProjectId: existingWorkspace.projectId,
+                });
+                projectId = existingWorkspace.projectId;
+            }
+        }
+        else if (!workspaceId || existingWorkspace.projectId !== projectId) {
+            v2_1.logger.error('createTenantProject: refusing project replacement for workspace code', {
+                workspaceCode,
+                requestedWorkspaceId: workspaceId || null,
+                requestedProjectId: projectId,
+                existingWorkspaceId: existingWorkspace.workspaceId,
+                existingProjectId: existingWorkspace.projectId,
+            });
+            throw new https_1.HttpsError('already-exists', 'Workspace code "' + workspaceCode +
+                '" is already bound to Firebase project "' +
+                existingWorkspace.projectId +
+                '". Resume that workspace instead of creating a new project.', {
+                workspaceCode,
+                existingWorkspaceId: existingWorkspace.workspaceId,
+                existingProjectId: existingWorkspace.projectId,
+                resumeRequired: true,
+            });
+        }
     }
     const reservedWorkspace = await findIncompleteWorkspaceByCode(masterApp, workspaceCode);
-    if (reservedWorkspace &&
-        (!workspaceId || reservedWorkspace.workspaceId !== workspaceId)) {
-        v2_1.logger.error('createTenantProject: refusing duplicate project allocation', {
-            workspaceCode,
-            requestedWorkspaceId: workspaceId || null,
-            existingWorkspaceId: reservedWorkspace.workspaceId,
-            existingProjectId: reservedWorkspace.projectId,
-        });
-        throw new https_1.HttpsError('already-exists', 'Workspace code "' + workspaceCode +
-            '" already has an incomplete workspace with Firebase project "' +
-            reservedWorkspace.projectId +
-            '". Resume that workspace instead of creating a new project.', {
-            workspaceCode,
-            existingWorkspaceId: reservedWorkspace.workspaceId,
-            existingProjectId: reservedWorkspace.projectId,
-            resumeRequired: true,
-        });
+    if (reservedWorkspace) {
+        if (workspaceId && reservedWorkspace.workspaceId === workspaceId) {
+            if (reservedWorkspace.projectId && reservedWorkspace.projectId !== projectId) {
+                v2_1.logger.info('createTenantProject: adopting reserved incomplete project ID for workspace', {
+                    workspaceId,
+                    originalRequestedId: projectId,
+                    reservedProjectId: reservedWorkspace.projectId,
+                });
+                projectId = reservedWorkspace.projectId;
+            }
+        }
+        else {
+            v2_1.logger.error('createTenantProject: refusing duplicate project allocation', {
+                workspaceCode,
+                requestedWorkspaceId: workspaceId || null,
+                existingWorkspaceId: reservedWorkspace.workspaceId,
+                existingProjectId: reservedWorkspace.projectId,
+            });
+            throw new https_1.HttpsError('already-exists', 'Workspace code "' + workspaceCode +
+                '" already has an incomplete workspace with Firebase project "' +
+                reservedWorkspace.projectId +
+                '". Resume that workspace instead of creating a new project.', {
+                workspaceCode,
+                existingWorkspaceId: reservedWorkspace.workspaceId,
+                existingProjectId: reservedWorkspace.projectId,
+                resumeRequired: true,
+            });
+        }
     }
     if (projectId === masterProjectId) {
         throw new https_1.HttpsError('invalid-argument', 'Cannot create tenant project with master project ID');
@@ -863,6 +1053,30 @@ exports.createTenantProject = (0, https_1.onCall)({
         // This helps avoid FAILED_PRECONDITION when GCP propagation is slow.
         v2_1.logger.info('Pre-flight check: ensuring project is ACTIVE before enabling Firebase', { projectId: finalProjectId });
         await pollProjectActive(finalProjectId, accessToken);
+        // Immediately record the allocated project ID in the workspace document so
+        // retries and subsequent steps always know and reuse this project ID.
+        if (workspaceId) {
+            try {
+                await masterApp.firestore().collection('workspaces').doc(workspaceId).set({
+                    firebaseProjectId: finalProjectId,
+                    gcpProjectVerified: true,
+                    gcpProjectNumber: projectNumber,
+                    gcpProjectDisplayName: displayName,
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+                }, { merge: true });
+                v2_1.logger.info('Bound allocated project ID to workspace document in master Firestore', {
+                    workspaceId,
+                    firebaseProjectId: finalProjectId,
+                });
+            }
+            catch (bindErr) {
+                v2_1.logger.warn('Failed to bind project ID to workspace doc (non-fatal)', {
+                    workspaceId,
+                    finalProjectId,
+                    error: bindErr.message,
+                });
+            }
+        }
         // ---- Step 3: Enable Firebase services (wait for completion) ----
         try {
             v2_1.logger.info('Enabling Firebase on project', { projectId: finalProjectId });

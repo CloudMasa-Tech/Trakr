@@ -1,6 +1,10 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import '../../firebase/firebase_context.dart';
 import '../../firebase/firebase_manager.dart';
@@ -8,7 +12,6 @@ import '../../services/platform_service.dart';
 import '../control_plane_firebase.dart';
 import '../models/workspace.dart';
 import '../repositories/workspace_allocation_repository.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import '../utils/map_utils.dart';
 
 /// What a permanent workspace deletion produced.
@@ -98,19 +101,84 @@ Future<WorkspaceDeletionReport> deleteWorkspace(Workspace workspace) async {
     await _purgeControlPlane(workspace, warnings: warnings);
   } else {
     // Call the Cloud Function only after validating the project identifier.
+    // Uses raw HTTP with an EXPLICIT Authorization header (see
+    // TenantProvisioner._deployTenantRulesAndIndexes for why the callable SDK
+    // is avoided).
     try {
-      final functions = FirebaseFunctions.instance;
-      final result = await functions.httpsCallable('deleteWorkspace').call({
-        'workspaceId': workspace.workspaceId,
-        'projectId': tenantProjectId,
-        'confirmation': 'DELETE',
-      }).timeout(const Duration(seconds: 300));
+      final masterApp = _firebaseManager.defaultApp;
+      debugPrint(
+        'deleteWorkspace: registered apps: '
+        '${Firebase.apps.map((a) => '"${a.name}"(${a.options.projectId})').join(', ')}',
+      );
+      debugPrint(
+        'deleteWorkspace: invoking against app "${masterApp.name}" '
+        '(project ${masterApp.options.projectId})',
+      );
 
-      final data = asStringKeyedMap(result.data);
+      final masterAuth = FirebaseAuth.instanceFor(app: masterApp);
+      final currentUser = masterAuth.currentUser;
+      if (currentUser == null) {
+        debugPrint(
+          'deleteWorkspace: no signed-in user on app "${masterApp.name}" - '
+          'aborting before call',
+        );
+        throw StateError('Admin session expired, please log in again.');
+      }
+
+      final idToken = await currentUser.getIdToken(true) ?? '';
+      if (idToken.isEmpty) {
+        throw StateError('Admin session expired, please log in again.');
+      }
+      debugPrint(
+        'deleteWorkspace: auth OK uid=${currentUser.uid} '
+        'token=${idToken.substring(0, 20 < idToken.length ? 20 : idToken.length)}...',
+      );
+
+      final url = Uri.parse(
+        'https://us-central1-${masterApp.options.projectId}'
+        '.cloudfunctions.net/deleteWorkspace',
+      );
+      debugPrint('deleteWorkspace: POST $url');
+
+      final response = await http
+          .post(
+            url,
+            headers: <String, String>{
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $idToken',
+            },
+            body: jsonEncode(<String, dynamic>{
+              'data': <String, dynamic>{
+                'workspaceId': workspace.workspaceId,
+                'projectId': tenantProjectId,
+                'confirmation': 'DELETE',
+              },
+            }),
+          )
+          .timeout(const Duration(seconds: 300));
+
+      debugPrint('deleteWorkspace: HTTP ${response.statusCode}');
+
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        throw StateError(
+          'Admin session expired or insufficient permissions, please log in '
+          'again. (Server responded ${response.statusCode}: ${response.body})',
+        );
+      }
+      if (response.statusCode != 200) {
+        throw StateError(
+          'Failed to delete workspace via Cloud Function: '
+          'HTTP ${response.statusCode}: ${response.body}',
+        );
+      }
+
+      final data = asStringKeyedMap(_callableResult(response.body));
       debugPrint('Cloud Function deleteWorkspace succeeded: $data');
 
       if (data['success'] != true) {
-        throw StateError('Cloud Function returned error: ${data['error'] ?? 'unknown error'}');
+        throw StateError(
+          'Cloud Function returned error: ${data['error'] ?? 'unknown error'}',
+        );
       }
 
       if (data['warnings'] is List) {
@@ -119,14 +187,6 @@ Future<WorkspaceDeletionReport> deleteWorkspace(Workspace workspace) async {
 
       debugPrint('WorkspaceDeletionService: Cloud Function deletion succeeded');
       await _purgeControlPlane(workspace, warnings: warnings);
-    } on FirebaseFunctionsException catch (e) {
-      debugPrint('Cloud Function deleteWorkspace failed: ${e.code} - ${e.message}');
-      throw StateError(
-        'Failed to delete workspace via Cloud Function: ${e.message}. '
-        'Ensure the Cloud Functions are deployed and the master service account has '
-        'Project Deleter role on folder 818058604638. '
-        'Details: ${e.details}',
-      );
     } catch (e) {
       debugPrint('WorkspaceDeletionService.deleteWorkspace: error - $e');
       rethrow;
@@ -161,6 +221,24 @@ Future<WorkspaceDeletionReport> deleteWorkspace(Workspace workspace) async {
 
   return WorkspaceDeletionReport(warnings: warnings);
 }
+
+  /// Unwraps the callable-protocol response body: returns the payload from
+  /// `{"result": ...}`, or throws on `{"error": {...}}`.
+  dynamic _callableResult(String body) {
+    final decoded = jsonDecode(body);
+    if (decoded is Map<String, dynamic>) {
+      if (decoded.containsKey('error')) {
+        final error = decoded['error'];
+        final message =
+            error is Map ? (error['message'] ?? error.toString()) : error;
+        throw StateError('Cloud Function returned error: $message');
+      }
+      return decoded['result'];
+    }
+    throw StateError(
+      'Cloud Function returned an unexpected response body: $body',
+    );
+  }
 
   Future<Map<String, dynamic>> _readRegistryExtras(String workspaceId) async {
     try {

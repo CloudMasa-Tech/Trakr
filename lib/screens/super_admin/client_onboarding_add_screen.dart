@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 
+import '../../control_plane/models/workspace_firebase_config.dart';
 import '../../control_plane/models/workspace_provision_request.dart';
 import '../../control_plane/services/workspace_provisioning_client_service.dart';
 import '../../theme/app_theme_colors.dart';
 import '../../utils/country_options.dart';
+import 'firebase_config_upload_field.dart';
 import 'portal_widgets.dart';
 import 'workspace_provisioning_progress_modal.dart';
 
@@ -53,7 +57,27 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
 
   final _adminEmailCtrl = TextEditingController();
 
+  // The manually created Firebase project this workspace binds to.
+  final _firebaseProjectIdCtrl = TextEditingController();
+  WorkspaceFirebaseConfig? _firebaseConfig;
+  bool _firebaseConfirmed = false;
+
+  // IAM setup: the user must run two gcloud role grants on the tenant project
+  // before provisioning (required by the deployTenantRules Cloud Function).
+  bool _iamConfirmed = false;
+
+  /// Firebase billing plan recorded for tracking ('spark' | 'blaze').
+  String? _firebasePlan;
+
+  /// Master project service account that needs IAM roles on the tenant
+  /// project for automated Firestore rules/indexes deployment.
+  static const String _masterServiceAccountEmail =
+      'firebase-adminsdk-fbsvc@trakradminsetup-28437.iam.gserviceaccount.com';
+
   static final _emailRegex = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$');
+
+  /// Firebase project ids: lowercase letters, digits and hyphens.
+  static final _firebaseProjectIdRegex = RegExp(r'^[a-z0-9][a-z0-9-]*$');
 
   String _selectedDialCode = '+91';
   String? _selectedIndustry;
@@ -67,6 +91,15 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
 
   bool get _busy => _submitting;
 
+  String? _firebaseProjectIdValidator(String? value) {
+    final v = value?.trim() ?? '';
+    if (v.isEmpty) return 'Firebase project ID is required';
+    if (!_firebaseProjectIdRegex.hasMatch(v)) {
+      return 'Only lowercase letters, digits and hyphens are allowed';
+    }
+    return null;
+  }
+
   bool get _canSubmit {
     if (_busy) return false;
     if (_workspaceNameCtrl.text.trim().isEmpty) return false;
@@ -74,7 +107,24 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
     if (_phoneCtrl.text.trim().isEmpty) return false;
     if (_selectedIndustry == null) return false;
     if (_emailValidator(_adminEmailCtrl.text) != null) return false;
+    if (_firebaseProjectIdValidator(_firebaseProjectIdCtrl.text) != null) {
+      return false;
+    }
+    if (_firebaseConfig == null || !_firebaseConfirmed) return false;
+    if (!_iamConfirmed) return false;
     return true;
+  }
+
+  /// The two gcloud IAM grants required on the tenant project, with the
+  /// project ID interpolated live from the project ID field.
+  String get _iamCommands {
+    final projectId = _firebaseProjectIdCtrl.text.trim();
+    return 'gcloud projects add-iam-policy-binding $projectId '
+        '--member="serviceAccount:$_masterServiceAccountEmail" '
+        '--role="roles/firebaserules.admin"\n'
+        'gcloud projects add-iam-policy-binding $projectId '
+        '--member="serviceAccount:$_masterServiceAccountEmail" '
+        '--role="roles/datastore.indexAdmin"';
   }
 
   @override
@@ -86,6 +136,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
       _phoneCtrl,
       _addressCtrl,
       _adminEmailCtrl,
+      _firebaseProjectIdCtrl,
     ]) {
       controller.addListener(_refreshButtonState);
     }
@@ -99,6 +150,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
       _phoneCtrl,
       _addressCtrl,
       _adminEmailCtrl,
+      _firebaseProjectIdCtrl,
     ]) {
       controller.removeListener(_refreshButtonState);
       controller.dispose();
@@ -146,6 +198,9 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
               : _addressCtrl.text.trim(),
           industry: _selectedIndustry!,
           companyAdminEmail: adminEmail,
+          firebaseProjectId: _firebaseProjectIdCtrl.text.trim(),
+          firebaseConfig: _firebaseConfig,
+          firebasePlan: _firebasePlan ?? '',
           existingWorkspaceId: incompleteWorkspace?.workspaceId,
         ),
         initialLogId: WorkspaceProvisioningProgressModal.generateLogId(),
@@ -219,7 +274,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
                               title: 'Workspace',
                               subtitle:
                                   'Name used for the workspace code and the '
-                                  'automatic Firebase provisioning flow.',
+                                  'tenant configuration flow.',
                               icon: Icons.workspaces_rounded,
                               children: [
                                 _field(
@@ -293,6 +348,108 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
                                 ),
                               ],
                             ),
+                            const SizedBox(height: 18),
+                            _buildSectionCard(
+                              title: 'Firebase project (created manually)',
+                              subtitle:
+                                  'Create the project yourself in the Firebase '
+                                  'Console first — enable Authentication '
+                                  '(Email/Password) and Cloud Firestore (Native '
+                                  'mode). Paste its web app configuration below; '
+                                  'TRAKR will NOT create or allocate a GCP '
+                                  'project.',
+                              icon: Icons.cloud_rounded,
+                              children: [
+                                _field(
+                                  controller: _firebaseProjectIdCtrl,
+                                  label: 'Firebase project ID',
+                                  hint: 'e.g. acme-attendance-prod',
+                                  required: true,
+                                  validator: _firebaseProjectIdValidator,
+                                ),
+                                const SizedBox(height: 6),
+                                const Row(
+                                  children: [
+                                    Icon(Icons.info_outline_rounded,
+                                        color: kCoSubtle, size: 13),
+                                    SizedBox(width: 6),
+                                    Expanded(
+                                      child: Text(
+                                        'Find it in Firebase Console → '
+                                        'Project settings → General → '
+                                        'Project ID.',
+                                        style: TextStyle(
+                                            color: kCoSubtle,
+                                            fontSize: 11.5,
+                                            height: 1.4),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                                _buildIamSetupSection(),
+                                const SizedBox(height: 14),
+                                if (_firebaseProjectIdCtrl.text.trim()
+                                        .isNotEmpty &&
+                                    _firebaseConfig != null &&
+                                    _firebaseConfig!.projectId.trim() !=
+                                        _firebaseProjectIdCtrl.text.trim()) ...[
+                                  Container(
+                                    padding: const EdgeInsets.all(12),
+                                    decoration: BoxDecoration(
+                                      color:
+                                          kCoDanger.withValues(alpha: 0.08),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(
+                                        color:
+                                            kCoDanger.withValues(alpha: 0.4),
+                                      ),
+                                    ),
+                                    child: Row(
+                                      children: [
+                                        const Icon(Icons.error_outline_rounded,
+                                            color: kCoDanger, size: 16),
+                                        const SizedBox(width: 8),
+                                        Expanded(
+                                          child: Text(
+                                            'The uploaded config belongs to project '
+                                            '"${_firebaseConfig!.projectId.trim()}" but the '
+                                            'project ID field says '
+                                            '"${_firebaseProjectIdCtrl.text.trim()}". '
+                                            'They must match.',
+                                            style: const TextStyle(
+                                                color: kCoDanger,
+                                                fontSize: 12,
+                                                height: 1.4),
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  const SizedBox(height: 14),
+                                ],
+                                _buildWebConfigExample(),
+                                const SizedBox(height: 14),
+                                FirebaseConfigUploadField(
+                                  config: _firebaseConfig,
+                                  confirmed: _firebaseConfirmed,
+                                  enabled: !_busy,
+                                  onParsed: (config) {
+                                    setState(() => _firebaseConfig = config);
+                                  },
+                                  onRemove: () {
+                                    setState(() {
+                                      _firebaseConfig = null;
+                                      _firebaseConfirmed = false;
+                                    });
+                                  },
+                                  onConfirmedChanged: (v) {
+                                    setState(() => _firebaseConfirmed = v);
+                                  },
+                                ),
+                                const SizedBox(height: 18),
+                                _buildBillingPlanSelector(),
+                              ],
+                            ),
                             const SizedBox(height: 24),
                             _buildActions(),
                           ],
@@ -314,6 +471,416 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
     if (v.isEmpty) return 'Email is required';
     if (!_emailRegex.hasMatch(v)) return 'Enter a valid email address';
     return null;
+  }
+
+  /// IAM setup step: shows the exact gcloud role grants (with the typed
+  /// project ID interpolated live), copy + Cloud Shell shortcuts, and a
+  /// required confirmation checkbox. Hidden until the project ID is non-empty
+  /// and matches [_firebaseProjectIdRegex].
+  Widget _buildIamSetupSection() {
+    final projectId = _firebaseProjectIdCtrl.text.trim();
+    final isValid = projectId.isNotEmpty &&
+        _firebaseProjectIdRegex.hasMatch(projectId);
+    if (!isValid) return const SizedBox.shrink();
+
+    final commands = _iamCommands;
+
+    return Container(
+      margin: const EdgeInsets.only(top: 14),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppThemeColors.darkCanvas,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: kCoBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.admin_panel_settings_rounded,
+                  color: kCoAccent, size: 15),
+              const SizedBox(width: 6),
+              const Expanded(
+                child: Text(
+                  'IAM setup (required)',
+                  style: TextStyle(
+                      color: kCoLabel,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 12.5),
+                ),
+              ),
+              Text(
+                'for $projectId',
+                overflow: TextOverflow.ellipsis,
+                style:
+                    const TextStyle(color: kCoSubtle, fontSize: 11),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Grant these roles so TRAKR can deploy Firestore rules and '
+            'indexes to this project automatically:',
+            style: TextStyle(color: kCoSubtle, fontSize: 11.5, height: 1.4),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.35),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: kCoBorder),
+            ),
+            child: SelectableText(
+              commands,
+              style: const TextStyle(
+                color: kCoLabel,
+                fontSize: 10.5,
+                height: 1.5,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await Clipboard.setData(ClipboardData(text: commands));
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('gcloud commands copied to clipboard'),
+                        behavior: SnackBarBehavior.floating,
+                        duration: Duration(seconds: 2),
+                      ),
+                    );
+                  }
+                },
+                icon: const Icon(Icons.copy_rounded, size: 14),
+                label: const Text('Copy commands',
+                    style: TextStyle(fontSize: 11.5)),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: kCoAccent,
+                  side: BorderSide(color: kCoAccent.withValues(alpha: 0.5)),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  minimumSize: Size.zero,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+              const SizedBox(width: 10),
+              InkWell(
+                onTap: () async {
+                  final uri = Uri.parse('https://console.cloud.google.com');
+                  if (await canLaunchUrl(uri)) {
+                    await launchUrl(uri, mode: LaunchMode.externalApplication);
+                  }
+                },
+                borderRadius: BorderRadius.circular(6),
+                child: const Padding(
+                  padding:
+                      EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.open_in_new_rounded, size: 13, color: kCoSubtle),
+                      SizedBox(width: 4),
+                      Text(
+                        'Open Cloud Shell',
+                        style: TextStyle(color: kCoSubtle, fontSize: 11.5),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          InkWell(
+            onTap: _busy
+                ? null
+                : () => setState(() => _iamConfirmed = !_iamConfirmed),
+            borderRadius: BorderRadius.circular(8),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: Checkbox(
+                      value: _iamConfirmed,
+                      onChanged: _busy
+                          ? null
+                          : (v) =>
+                              setState(() => _iamConfirmed = v ?? false),
+                      activeColor: kCoAccent,
+                      materialTapTargetSize:
+                          MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      "I've run these commands in Google Cloud Shell or my "
+                      'terminal',
+                      style: TextStyle(
+                          color: kCoLabel, fontSize: 11.5, height: 1.35),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 2),
+          const Padding(
+            padding: EdgeInsets.only(left: 28),
+            child: Text(
+              'These grants are required for automated Firestore rules '
+              'deployment to succeed — provisioning will fail without them.',
+              style: TextStyle(color: kCoSubtle, fontSize: 11, height: 1.35),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Helper block showing where to find the web config and what it looks like.
+  Widget _buildWebConfigExample() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppThemeColors.darkCanvas,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: kCoBorder),
+      ),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.code_rounded, color: kCoAccent, size: 14),
+              SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'Paste your Firebase Web app config below — example format:',
+                  style: TextStyle(
+                      color: kCoLabel,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 11.5),
+                ),
+              ),
+            ],
+          ),
+          SizedBox(height: 6),
+          SelectableText(
+            '{\n'
+            '  "apiKey": "AIzaSy…",\n'
+            '  "authDomain": "acme.firebaseapp.com",\n'
+            '  "projectId": "acme-attendance-prod",\n'
+            '  "storageBucket": "acme-attendance-prod.appspot.com",\n'
+            '  "messagingSenderId": "123456789012",\n'
+            '  "appId": "1:123456789012:web:a1b2c3d4e5f6"\n'
+            '}',
+            style: TextStyle(
+              color: kCoSubtle,
+              fontSize: 10.5,
+              height: 1.45,
+              fontFamily: 'monospace',
+            ),
+          ),
+          SizedBox(height: 6),
+          Text(
+            'Copy it from Firebase Console → Project settings → Your apps → '
+            'Web app → SDK setup and configuration. You can paste this JSON, '
+            'upload google-services.json / GoogleService-Info.plist, or type '
+            'each field manually.',
+            style: TextStyle(color: kCoSubtle, fontSize: 11, height: 1.4),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Required radio selector recording which Firebase billing plan the Super
+  /// Admin chose for the manually created project. Purely informational.
+  Widget _buildBillingPlanSelector() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        FormField<String>(
+          initialValue: _firebasePlan,
+          validator: (v) => (v == null || v.isEmpty)
+              ? 'Select the billing plan used for this project'
+              : null,
+          autovalidateMode: AutovalidateMode.onUserInteraction,
+          builder: (fieldState) {
+            final hasError = fieldState.hasError;
+            void select(String? v) {
+              if (v == null || v.isEmpty || _busy) return;
+              fieldState.didChange(v);
+              setState(() => _firebasePlan = v);
+            }
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    const Text('Firebase billing plan',
+                        style: TextStyle(
+                            color: kCoLabel,
+                            fontWeight: FontWeight.w700,
+                            fontSize: 13)),
+                    const Padding(
+                      padding: EdgeInsets.only(left: 4),
+                      child: Text('*',
+                          style: TextStyle(color: kCoDanger)),
+                    ),
+                    if (hasError) ...[
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(fieldState.errorText!,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: kCoDanger, fontSize: 11.5)),
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 8),
+                RadioGroup<String>(
+                  groupValue: _firebasePlan,
+                  onChanged: select,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildPlanTile(
+                        value: 'spark',
+                        selected: _firebasePlan == 'spark',
+                        showErrorBorder: hasError && _firebasePlan == null,
+                        title: 'Spark (Free)',
+                        subtitle: 'Free tier with usage limits',
+                        onSelect: () => select('spark'),
+                      ),
+                      const SizedBox(width: 10),
+                      _buildPlanTile(
+                        value: 'blaze',
+                        selected: _firebasePlan == 'blaze',
+                        showErrorBorder: hasError && _firebasePlan == null,
+                        title: 'Blaze (Pay as you go)',
+                        subtitle: 'Pay-per-use beyond free quotas',
+                        onSelect: () => select('blaze'),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 10),
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: AppThemeColors.darkCanvas,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: kCoBorder),
+          ),
+          child: const Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(Icons.info_outline_rounded, color: kCoSubtle, size: 15),
+              SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Blaze plan is required if you need Cloud Functions, '
+                  'external network calls, or higher usage limits. Spark plan '
+                  'is free but has usage limits.',
+                  style: TextStyle(color: kCoSubtle, fontSize: 11.5, height: 1.4),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPlanTile({
+    required String value,
+    required bool selected,
+    required bool showErrorBorder,
+    required String title,
+    required String subtitle,
+    required VoidCallback onSelect,
+  }) {
+    final borderColor =
+        selected ? kCoAccent : (showErrorBorder ? kCoDanger : kCoBorder);
+    return Expanded(
+      child: InkWell(
+        onTap: _busy ? null : onSelect,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            color: selected
+                ? kCoAccent.withValues(alpha: 0.08)
+                : AppThemeColors.darkCanvas,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: borderColor,
+              width: selected ? 1.4 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 20,
+                height: 20,
+                child: Radio<String>(
+                  value: value,
+                  activeColor: kCoAccent,
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: selected ? kCoLabel : kCoSubtle,
+                        fontWeight:
+                            selected ? FontWeight.w800 : FontWeight.w600,
+                        fontSize: 12.5,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: kCoSubtle, fontSize: 11, height: 1.3),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Widget _buildTopBar() {
@@ -380,10 +947,11 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
         ),
         SizedBox(height: 6),
         Text(
-          'Enter the workspace and company details, then TRAKR automatically '
-          'creates or allocates the Firebase/GCP project, configures the '
-          'tenant, seeds its data, and emails the first Company Admin their '
-          'login credentials.',
+          'Enter the workspace and company details and supply the Firebase '
+          'project you created manually in the Firebase Console. TRAKR then '
+          'configures it — deploys the Firestore rules, seeds the tenant data, '
+          'and emails the first Company Admin their login credentials. The '
+          'GCP/Firebase project itself is never created automatically.',
           style: TextStyle(color: kCoSubtle, fontSize: 13, height: 1.5),
         ),
       ],

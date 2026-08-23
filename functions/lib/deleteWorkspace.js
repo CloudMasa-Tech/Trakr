@@ -1,9 +1,19 @@
 "use strict";
 /**
- * Callable Cloud Function: deleteWorkspace
+ * HTTP Cloud Function: deleteWorkspace (onRequest)
  *
  * Permanently deletes a tenant workspace and its associated GCP/Firebase project.
  * This is an irreversible operation that requires superadmin privileges.
+ *
+ * NOTE: Converted from onCall to onRequest because the Flutter Web client
+ * invokes this endpoint via raw fetch/http.post with an EXPLICIT
+ * `Authorization: Bearer <idToken>` header (the callable SDK was observed
+ * sending empty Authorization headers). Auth is therefore verified manually
+ * via admin.auth().verifyIdToken() + super_admin claim check.
+ *
+ * Request body: {"data": {"workspaceId","projectId","confirmation"}} (callable
+ * envelope kept for compatibility; a flat body is also accepted).
+ * Response body: {"result": {...}} on success, {"error": {...}} on failure.
  *
  * Flow:
  * 1. Validates superadmin authorization
@@ -16,12 +26,6 @@
  * - Caller must be authenticated superadmin (custom claim super_admin == true)
  * - Master service account needs roles/resourcemanager.projectDeleter on the folder
  * - SERVICE_ACCOUNT_JSON secret must be configured
- *
- * @param data.workspaceId - The workspace ID to delete
- * @param data.projectId - The Firebase project ID to delete (must match workspace)
- * @param data.confirmation - Must be "DELETE" to confirm irreversible action
- * @returns { success, message, projectId, workspaceId, deletedAt }
- * @throws HttpsError if not superadmin, invalid input, or deletion fails
  */
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
@@ -62,30 +66,16 @@ const https_1 = require("firebase-functions/v2/https");
 const v2_1 = require("firebase-functions/v2");
 const admin = __importStar(require("firebase-admin"));
 const firebaseAdmin_1 = require("./lib/firebaseAdmin");
+const httpAuth_1 = require("./lib/httpAuth");
 // Folder ID where tenant projects are created
 const TENANT_FOLDER_ID = '818058604638';
 const FOLDER_RESOURCE = `folders/${TENANT_FOLDER_ID}`;
-exports.deleteWorkspace = (0, https_1.onCall)({
-    secrets: [firebaseAdmin_1.serviceAccountJson],
-    region: 'us-central1',
-    maxInstances: 3,
-    memory: '512MiB',
-    timeoutSeconds: 300,
-}, async (request) => {
+async function handleDeleteWorkspace(data, callerEmail) {
     const startTime = Date.now();
     // Extract inputs
-    const wsId = request.data?.workspaceId;
-    const projectId = request.data?.projectId;
-    const confirmation = request.data?.confirmation;
-    // ---- Auth/Authorization ----
-    if (!request.auth?.token?.super_admin) {
-        v2_1.logger.warn('deleteWorkspace: permission denied - not superadmin', {
-            uid: request.auth?.uid,
-            email: request.auth?.token?.email,
-            hasSuperAdminClaim: request.auth?.token?.super_admin,
-        });
-        throw new https_1.HttpsError('permission-denied', 'Only superadmins can delete workspaces. Missing super_admin custom claim.');
-    }
+    const wsId = data.workspaceId;
+    const projectId = data.projectId;
+    const confirmation = data.confirmation;
     // ---- Input Validation ----
     if (!wsId || wsId.trim().length === 0) {
         throw new https_1.HttpsError('invalid-argument', 'workspaceId is required (string)');
@@ -351,7 +341,7 @@ exports.deleteWorkspace = (0, https_1.onCall)({
                 projectId,
                 workspaceId: wsId,
                 deletedAt: admin.firestore.FieldValue.serverTimestamp(),
-                deletedBy: request.auth?.token?.email || 'unknown',
+                deletedBy: callerEmail || 'unknown',
                 deletionType: 'superadmin_manual',
             });
             v2_1.logger.info('Recorded deletion in deleted_projects collection', { projectId });
@@ -415,6 +405,42 @@ exports.deleteWorkspace = (0, https_1.onCall)({
                 `Original error: ${errorMessage}`, { actionRequired: true, projectId });
         }
         throw new https_1.HttpsError('internal', `Deletion failed: ${errorMessage}`);
+    }
+}
+/**
+ * HTTP entrypoint: CORS + manual Bearer-token auth + callable-style
+ * request/response envelope.
+ */
+exports.deleteWorkspace = (0, https_1.onRequest)({
+    secrets: [firebaseAdmin_1.serviceAccountJson],
+    region: 'us-central1',
+    maxInstances: 3,
+    memory: '512MiB',
+    timeoutSeconds: 300,
+}, async (req, res) => {
+    (0, httpAuth_1.applyCors)(req, res);
+    // Browser preflight — respond directly.
+    if (req.method === 'OPTIONS') {
+        res.status(204).send('');
+        return;
+    }
+    try {
+        if (req.method !== 'POST') {
+            throw new httpAuth_1.HttpEndpointError(405, 'invalid-argument', 'Use POST.');
+        }
+        // Manual auth: verify Authorization: Bearer <idToken> against master
+        // project Auth and enforce the super_admin custom claim.
+        const decoded = await (0, httpAuth_1.requireSuperAdmin)(req);
+        const data = (0, httpAuth_1.extractData)(req.body);
+        const result = await handleDeleteWorkspace(data, decoded.email);
+        (0, httpAuth_1.sendResult)(res, result);
+    }
+    catch (e) {
+        v2_1.logger.error('deleteWorkspace request failed', {
+            error: e.message,
+            stack: e.stack,
+        });
+        (0, httpAuth_1.sendError)(res, e);
     }
 });
 // Helper function to delete project allocation

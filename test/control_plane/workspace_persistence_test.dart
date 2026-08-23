@@ -119,5 +119,28 @@ void main() {
       expect(restored.firebaseConfigured, isFalse);
       expect(restored.firebaseConfig.configMethod, FirebaseConfigMethod.config);
     });
+
+    test('new workspace with empty firebaseProjectId produces null in toMap and restores as empty string', () {
+      const workspace = Workspace(
+        workspaceId: 'ws-new',
+        workspaceCode: 'brand-new',
+        companyName: 'Brand New Co',
+        firebaseConfig: WorkspaceFirebaseConfig(
+          apiKey: '',
+          appId: '',
+          projectId: '',
+          messagingSenderId: '',
+          storageBucket: '',
+          authDomain: '',
+        ),
+      );
+      expect(workspace.firebaseProjectId, isEmpty);
+      final map = workspace.toMap();
+      expect(map['firebaseProjectId'], isNull);
+
+      final restored = Workspace.fromMap(map, 'ws-new');
+      expect(restored.firebaseProjectId, isEmpty);
+      expect(restored.workspaceCode, 'brand-new');
+    });
   });
 }

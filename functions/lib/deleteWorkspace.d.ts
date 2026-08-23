@@ -1,8 +1,18 @@
 /**
- * Callable Cloud Function: deleteWorkspace
+ * HTTP Cloud Function: deleteWorkspace (onRequest)
  *
  * Permanently deletes a tenant workspace and its associated GCP/Firebase project.
  * This is an irreversible operation that requires superadmin privileges.
+ *
+ * NOTE: Converted from onCall to onRequest because the Flutter Web client
+ * invokes this endpoint via raw fetch/http.post with an EXPLICIT
+ * `Authorization: Bearer <idToken>` header (the callable SDK was observed
+ * sending empty Authorization headers). Auth is therefore verified manually
+ * via admin.auth().verifyIdToken() + super_admin claim check.
+ *
+ * Request body: {"data": {"workspaceId","projectId","confirmation"}} (callable
+ * envelope kept for compatibility; a flat body is also accepted).
+ * Response body: {"result": {...}} on success, {"error": {...}} on failure.
  *
  * Flow:
  * 1. Validates superadmin authorization
@@ -15,18 +25,10 @@
  * - Caller must be authenticated superadmin (custom claim super_admin == true)
  * - Master service account needs roles/resourcemanager.projectDeleter on the folder
  * - SERVICE_ACCOUNT_JSON secret must be configured
- *
- * @param data.workspaceId - The workspace ID to delete
- * @param data.projectId - The Firebase project ID to delete (must match workspace)
- * @param data.confirmation - Must be "DELETE" to confirm irreversible action
- * @returns { success, message, projectId, workspaceId, deletedAt }
- * @throws HttpsError if not superadmin, invalid input, or deletion fails
  */
-export declare const deleteWorkspace: import("firebase-functions/v2/https").CallableFunction<any, Promise<{
-    success: boolean;
-    message: string;
-    workspaceId: string;
-    projectId: string;
-    deletedAt: string;
-}>, unknown>;
+/**
+ * HTTP entrypoint: CORS + manual Bearer-token auth + callable-style
+ * request/response envelope.
+ */
+export declare const deleteWorkspace: import("firebase-functions/v2/https").HttpsFunction;
 //# sourceMappingURL=deleteWorkspace.d.ts.map

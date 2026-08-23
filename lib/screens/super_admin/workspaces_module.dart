@@ -720,8 +720,35 @@ else if (pageWorkspaces.isEmpty)
     );
   }
 
-  Widget _buildUnverifiedWarningBanner(List<Workspace> workspaces) {
-    return Container(
+  /// Health badge for the HEALTH column, styled like the Verified badge in
+  /// the GCP VERIFIED column.
+  Widget _healthChip(WorkspaceHealth health) {
+    final (color, icon) = switch (health) {
+      WorkspaceHealth.healthy => (kCoGreen, Icons.check_circle_rounded),
+      WorkspaceHealth.provisioning => (kCoCyan, Icons.autorenew_rounded),
+      WorkspaceHealth.unhealthy => (kCoDanger, Icons.error_outline_rounded),
+    };
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, color: color, size: 16),
+        const SizedBox(width: 4),
+        Flexible(
+          child: Text(
+            health.label,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: color,
+              fontSize: 11.5,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildUnverifiedWarningBanner(List<Workspace> workspaces) {    return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -917,6 +944,13 @@ else if (pageWorkspaces.isEmpty)
                   ),
                 ),
               ],
+            ),
+          ),
+          Expanded(
+            flex: 1,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _healthChip(workspace.health),
             ),
           ),
           Expanded(

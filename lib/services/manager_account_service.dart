@@ -38,6 +38,7 @@ class ManagerAccountService {
     String? address,
     String? photoUrl,
     String? companyId,
+    String? roleId,
     String? roleName,
     int? roleLevel,
     String? reportsToUserId,
@@ -86,7 +87,9 @@ class ManagerAccountService {
         'salary': salary,
         'photoUrl': photoUrl,
         'authUid': createdUser?.uid,
-        'roleId': 'manager',
+        'roleId': (roleId != null && roleId.trim().isNotEmpty)
+            ? roleId.trim()
+            : 'manager',
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
         'bloodGroup': bloodGroup,
@@ -105,7 +108,9 @@ class ManagerAccountService {
         'email': normalizedEmail,
         'phone': phone.trim(),
         'role': 'manager',
-        'roleId': 'manager',
+        'roleId': (roleId != null && roleId.trim().isNotEmpty)
+            ? roleId.trim()
+            : 'manager',
         'roleName': roleName,
         'roleLevel': roleLevel,
         'reportsToUserId': reportsToUserId,

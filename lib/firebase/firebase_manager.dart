@@ -145,13 +145,26 @@ class FirebaseManager {
     if (options == null) {
       // No config was requested — reuse any app already bound to the workspace.
       final cached = _apps[workspaceId];
-      if (cached != null) return cached;
+      if (cached != null) {
+        debugPrint(
+          'FirebaseManager.initializeTenantApp: REUSING tracked app '
+          '"$workspaceId" (project ${cached.options.projectId})',
+        );
+        return cached;
+      }
       final existing = Firebase.apps.where((app) => app.name == workspaceId);
       if (existing.isNotEmpty) {
         final app = existing.first;
+        debugPrint(
+          'FirebaseManager.initializeTenantApp: adopting UNTRACKED app '
+          '"$workspaceId" (no options provided to verify it — caller beware)',
+        );
         _apps[workspaceId] = app;
         return app;
       }
+      debugPrint(
+        'FirebaseManager.initializeTenantApp: creating NEW app "$workspaceId"',
+      );
       return _initialize(
         workspaceId: workspaceId,
         options: await _resolveOptions(workspaceId),
@@ -164,19 +177,50 @@ class FirebaseManager {
     // master project's API key) and surface as `api-key-not-valid`.
     final cached = _apps[workspaceId];
     if (cached != null) {
-      if (_sameProject(cached.options, options)) return cached;
-      return _replaceStaleApp(workspaceId: workspaceId, options: options);
-    }
-    final existing = Firebase.apps.where((app) => app.name == workspaceId);
-    if (existing.isNotEmpty) {
-      final app = existing.first;
-      if (_sameProject(app.options, options)) {
-        _apps[workspaceId] = app;
-        return app;
+      if (_sameProject(cached.options, options)) {
+        debugPrint(
+          'FirebaseManager.initializeTenantApp: REUSING tracked app '
+          '"$workspaceId" (project ${cached.options.projectId})',
+        );
+        return cached;
       }
+      debugPrint(
+        'FirebaseManager.initializeTenantApp: tracked app "$workspaceId" is '
+        'bound to a different project than requested — replacing',
+      );
       return _replaceStaleApp(workspaceId: workspaceId, options: options);
     }
 
+    // Registered at the Firebase core level but NOT tracked by this manager.
+    // This is a ZOMBIE app: it survived a previous disposeTenant() whose
+    // app.delete() threw (e.g. live listeners during failed provisioning).
+    // Its Firestore client may already be terminated — handing it back would
+    // surface as [cloud_firestore/failed-precondition] "The client has already
+    // been terminated". Always delete and recreate a completely fresh app.
+    final untracked = Firebase.apps.where((app) => app.name == workspaceId).toList();
+    if (untracked.isNotEmpty) {
+      debugPrint(
+        'FirebaseManager.initializeTenantApp: found UNTRACKED app '
+        '"$workspaceId" (not in manager cache — likely a zombie from a '
+        'failed dispose whose app.delete() did not complete). Deleting it and '
+        'creating a fresh app.',
+      );
+      try {
+        await untracked.first.delete();
+      } catch (e) {
+        debugPrint(
+          'FirebaseManager.initializeTenantApp: failed to delete untracked '
+          'app "$workspaceId" (${e is Exception ? e : e}) — attempting to '
+          're-initialize over it anyway',
+        );
+      }
+      return _initialize(workspaceId: workspaceId, options: options);
+    }
+
+    debugPrint(
+      'FirebaseManager.initializeTenantApp: creating NEW app "$workspaceId" '
+      '(project ${options.projectId})',
+    );
     return _initialize(workspaceId: workspaceId, options: options);
   }
 
@@ -302,6 +346,9 @@ class FirebaseManager {
 
   /// Switches the active project back to the default Firebase project.
   FirebaseContext activateDefault() {
+    // Capture BEFORE nulling — the provisioning lock belongs to the workspace
+    // being deactivated, and must be released for dispose/retry cycles to work.
+    final previousWorkspaceId = _activeWorkspaceId;
     _activeWorkspaceId = null;
     try {
       final context = FirebaseContext();
@@ -310,7 +357,7 @@ class FirebaseManager {
       _contextApplier?.call(context);
       return context;
     } finally {
-      clearProvisioning(_activeWorkspaceId ?? '');
+      clearProvisioning(previousWorkspaceId ?? '');
     }
   }
 
@@ -337,7 +384,20 @@ class FirebaseManager {
       );
     }
     final app = _apps[workspaceId];
-    if (app == null) return;
+    if (app == null) {
+      // Not tracked by this manager, but a zombie may still be registered at
+      // the Firebase core level from an earlier failed dispose. Best-effort
+      // clean it up so a later initializeTenantApp() can never pick it up.
+      final zombie = Firebase.apps.where((a) => a.name == workspaceId).toList();
+      if (zombie.isNotEmpty) {
+        debugPrint(
+          'FirebaseManager.disposeTenant: "$workspaceId" was not tracked but '
+          'an unregistered app with that name exists — deleting the zombie.',
+        );
+        await _deleteAppWithRetry(zombie.first, workspaceId);
+      }
+      return;
+    }
 
     if (_activeWorkspaceId == workspaceId) {
       _activeWorkspaceId = null;
@@ -347,12 +407,49 @@ class FirebaseManager {
       _contextApplier?.call(context);
     }
 
+    // Explicitly terminate the tenant's Firestore client first. This tears
+    // down streams/writes deterministically BEFORE app.delete(), making the
+    // delete far less likely to fail — and guarantees that even if the rest
+    // of teardown goes wrong, no terminated client is ever handed back out.
     try {
-      await app.delete();
-    } catch (_) {
-      // App may already have been deleted; ignore and clean up cache anyway.
+      await FirebaseFirestore.instanceFor(app: app).terminate();
+    } catch (e) {
+      debugPrint(
+        'FirebaseManager.disposeTenant: Firestore terminate for '
+        '"$workspaceId" failed (non-fatal, may already be terminated): $e',
+      );
     }
+
+    final deleted = await _deleteAppWithRetry(app, workspaceId);
+    debugPrint(
+      deleted
+          ? 'FirebaseManager.disposeTenant: app "$workspaceId" fully deleted'
+          : 'FirebaseManager.disposeTenant: WARNING — app "$workspaceId" could '
+              'NOT be fully deleted; initializeTenantApp() will treat it as a '
+              'zombie and replace it on next use',
+    );
     _apps.remove(workspaceId);
+  }
+
+  /// Deletes a [FirebaseApp], retrying once after a short delay (in-flight
+  /// platform teardown often needs a tick to release). Returns whether the
+  /// deletion actually succeeded — callers must not assume it did.
+  Future<bool> _deleteAppWithRetry(FirebaseApp app, String label) async {
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        await app.delete();
+        return true;
+      } catch (e) {
+        debugPrint(
+          'FirebaseManager._deleteAppWithRetry: app.delete() for "$label" '
+          'failed (attempt $attempt/2): $e',
+        );
+        if (attempt < 2) {
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+        }
+      }
+    }
+    return false;
   }
 
   /// Disposes every cached tenant [FirebaseApp].

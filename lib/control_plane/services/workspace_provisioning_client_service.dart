@@ -1,7 +1,6 @@
 import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 
 import '../control_plane_firebase.dart';
@@ -41,32 +40,6 @@ class WorkspaceProvisionResult {
 }
 
 
-class _TenantProjectAllocation {
-  final String projectId;
-  final WorkspaceFirebaseConfig firebaseConfig;
-  final String displayName;
-  final String projectNumber;
-  final bool projectIdChanged;
-  final bool firebaseEnabled;
-  final bool apisEnabled;
-  final bool firestoreDbCreated;
-  final bool authEnabled;
-  final bool alreadyExisted;
-
-  const _TenantProjectAllocation({
-    required this.projectId,
-    required this.firebaseConfig,
-    required this.displayName,
-    required this.projectNumber,
-    required this.projectIdChanged,
-    required this.firebaseEnabled,
-    required this.apisEnabled,
-    required this.firestoreDbCreated,
-    required this.authEnabled,
-    required this.alreadyExisted,
-  });
-}
-
 /// Client-side provisioning for a brand-new tenant workspace.
 ///
 /// Replaces the `provisionWorkspace` HTTPS Cloud Function, which is unusable on
@@ -76,10 +49,14 @@ class _TenantProjectAllocation {
 ///
 /// 1. Generates a unique workspace code/slug and registers the workspace in the
 ///    Master `workspaces` control plane (bound to the shared default project).
-/// 2. Creates the Company Admin login account and emails the credentials
-///    (best-effort via the Vercel mailer).
-/// 3. Seeds the tenant defaults (company, departments, policies, QR token,
-///    roles/permissions) through [DirectTenantProvisioner]/[TenantSeeder].
+/// 2. Binds the workspace to the ALREADY-CREATED Firebase project supplied by
+///    the Super Admin (created manually in the Firebase Console with
+///    Authentication → Email/Password and Firestore Native mode enabled). No
+///    GCP/Firebase project is ever created by this service.
+/// 3. Deploys the tenant Firestore rules, creates the Company Admin login
+///    account (credentials emailed best-effort), and seeds the tenant defaults
+///    (company, departments, policies, QR token, roles/permissions) through
+///    [DirectTenantProvisioner]/[TenantSeeder].
 /// 4. Appends timestamped progress lines to `workspace_provision_logs/{logId}`
 ///    so the onboarding progress modal keeps streaming in real time.
 ///
@@ -245,17 +222,10 @@ class WorkspaceProvisioningClientService {
       finalWorkspaceId = generateWorkspaceIdFromCode(generatedCode);
     }
 
-    final storedProjectId = retriedWorkspace?.firebaseProjectId.trim() ?? '';
-    final storedConfigProjectId = retriedWorkspace?.firebaseConfig.projectId.trim() ?? '';
-    final retryProjectId = storedProjectId.isNotEmpty ? storedProjectId : storedConfigProjectId;
-    final workspaceSlug = workspaceCode;
-    final provisionalFirebaseProjectId = retryProjectId.isNotEmpty ? retryProjectId : workspaceCode;
-    if (retryProjectId.isNotEmpty) {
-      debugPrint(
-        'WorkspaceProvisioningClientService.provision: retry will reuse existing Firebase project '
-        '"$retryProjectId" for workspace "$finalWorkspaceId".',
-      );
-    }
+    // ── Resolve the manually created Firebase project ────────────────────
+    // TRAKR never creates GCP/Firebase projects. The project must be supplied
+    // explicitly: either carried over from a partially-failed retry workspace,
+    // or entered in the onboarding form.
     const emptyFirebaseConfig = WorkspaceFirebaseConfig(
       apiKey: '',
       appId: '',
@@ -264,8 +234,69 @@ class WorkspaceProvisioningClientService {
       storageBucket: '',
       authDomain: '',
     );
-    var firebaseProjectId = provisionalFirebaseProjectId;
-    var firebaseConfig = retriedWorkspace?.firebaseConfig ?? emptyFirebaseConfig;
+    final storedConfig = retriedWorkspace?.firebaseConfig;
+    final hasUsableStoredBinding =
+        (retriedWorkspace?.firebaseProjectId.trim().isNotEmpty ?? false) &&
+            (storedConfig?.isValid ?? false);
+    late final String firebaseProjectId;
+    late final WorkspaceFirebaseConfig firebaseConfig;
+    if (hasUsableStoredBinding) {
+      firebaseProjectId = retriedWorkspace!.firebaseProjectId.trim();
+      firebaseConfig = storedConfig!;
+      debugPrint(
+        'WorkspaceProvisioningClientService.provision: retry will reuse the '
+        'manually created Firebase project "$firebaseProjectId" for workspace '
+        '"$finalWorkspaceId".',
+      );
+    } else {
+      firebaseProjectId = request.firebaseProjectId.trim();
+      firebaseConfig = request.firebaseConfig ?? emptyFirebaseConfig;
+    }
+    final workspaceSlug = workspaceCode;
+
+    // Validate the supplied binding before any registry/log writes happen.
+    if (firebaseProjectId.isEmpty) {
+      throw Exception(
+        'No Firebase project supplied. Create the project manually in the '
+        'Firebase Console and enter its project ID during onboarding.',
+      );
+    }
+    if (!firebaseConfig.isValid) {
+      throw Exception(
+        'The web app configuration for Firebase project "$firebaseProjectId" '
+        'is missing or incomplete. Paste it in the onboarding form '
+        '(Firebase Console → Project settings → Your apps → Web app).',
+      );
+    }
+    if (firebaseConfig.projectId.trim() != firebaseProjectId) {
+      throw Exception(
+        'Firebase project mismatch: the entered project ID "$firebaseProjectId"'
+        ' does not match the uploaded configuration\'s projectId '
+        '"${firebaseConfig.projectId.trim()}".',
+      );
+    }
+    if (await _registry.isFirebaseProjectMapped(firebaseProjectId,
+        excludeId: finalWorkspaceId)) {
+      throw Exception(
+        'Firebase project "$firebaseProjectId" is already bound to another '
+        'workspace. Each workspace needs its own dedicated project.',
+      );
+    }
+
+    // ── Resolve the recorded Firebase billing plan ────────────────────────
+    // Purely informational/tracking: which plan the Super Admin selected when
+    // creating the project manually ('spark' or 'blaze'). TRAKR never changes
+    // the actual plan via API.
+    final requestedPlan = request.firebasePlan.trim().toLowerCase();
+    final storedPlan = retriedWorkspace?.firebasePlan.trim().toLowerCase() ?? '';
+    final firebasePlan = storedPlan.isNotEmpty ? storedPlan : requestedPlan;
+    if (!WorkspaceProvisionRequest.validFirebasePlans.contains(firebasePlan)) {
+      throw Exception(
+        'Select the Firebase billing plan (Spark or Blaze) for project '
+        '"$firebaseProjectId" during onboarding.',
+      );
+    }
+
     final logId = (request.logId?.trim().isNotEmpty ?? false)
         ? request.logId!.trim()
         : generateLogId();
@@ -316,6 +347,7 @@ class WorkspaceProvisioningClientService {
         companyName: companyName,
         firebaseProjectId: firebaseProjectId,
         firebaseConfig: firebaseConfig,
+        firebasePlan: firebasePlan,
         adminEmail: adminEmail,
         adminName: adminName,
         workspaceName: workspaceName,
@@ -326,37 +358,16 @@ class WorkspaceProvisioningClientService {
       await logLine(
           'Registered workspace "$workspaceCode" in the control plane.');
       await logLine(
-          "Automatic Firebase project provisioning will allocate the workspace's dedicated project.");
+          'Using the manually created Firebase project "$firebaseProjectId".');
       debugPrint(
         'WorkspaceProvisioningClientService.provision: workspace registered.',
       );
 
       debugPrint(
-        'WorkspaceProvisioningClientService: allocating Firebase project '
-        '"$firebaseProjectId" for workspace "$finalWorkspaceId".',
+        'WorkspaceProvisioningClientService.provision: binding pre-created '
+        'Firebase project "$firebaseProjectId" to workspace '
+        '"$finalWorkspaceId".',
       );
-      final allocation = await _allocateTenantProject(
-        // On resume this is the stored project ID, never the workspace code.
-        projectSeed: firebaseProjectId,
-        workspaceCode: workspaceCode,
-        workspaceId: finalWorkspaceId,
-        companyName: companyName,
-      );
-      firebaseProjectId = allocation.projectId;
-      firebaseConfig = allocation.firebaseConfig;
-      await _registry.update(finalWorkspaceId, {
-        'firebaseProjectId': firebaseProjectId,
-        'firebaseConfig': firebaseConfig.toMap(),
-        'firebaseConfigured': true,
-        'gcpProjectDisplayName': allocation.displayName,
-        'gcpProjectVerified': true,
-        'gcpProjectNumber': allocation.projectNumber,
-        'firebaseEnabled': allocation.firebaseEnabled,
-        'apisEnabled': allocation.apisEnabled,
-        'firestoreDbCreated': allocation.firestoreDbCreated,
-        'authEnabled': allocation.authEnabled,
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
 
       final workspace = Workspace(
         workspaceId: finalWorkspaceId,
@@ -410,8 +421,6 @@ class WorkspaceProvisioningClientService {
         '(companyId=${tenant.companyId}, adminUid=${tenant.adminUid}, '
         'firebaseProjectId=${tenant.firebaseProjectId}).',
       );
-      firebaseProjectId = tenant.firebaseProjectId;
-      firebaseConfig = tenant.firebaseConfig;
       await _registry.updateFirebaseConfig(finalWorkspaceId, firebaseConfig);
       await logLine('Created Company Admin account for $adminEmail.');
       await logLine(
@@ -428,6 +437,7 @@ class WorkspaceProvisioningClientService {
         'adminUid': tenant.adminUid,
         'firebaseProjectId': firebaseProjectId,
         'firebaseConfig': firebaseConfig.toMap(),
+        'firebasePlan': firebasePlan,
         'adminEmailSent': tenant.adminEmailSent,
         if (tenant.adminEmailError != null) 'adminEmailError': tenant.adminEmailError,
         'updatedAt': FieldValue.serverTimestamp(),
@@ -512,52 +522,14 @@ class WorkspaceProvisioningClientService {
   }
 
 
-  Future<_TenantProjectAllocation> _allocateTenantProject({
-    required String projectSeed,
-    required String workspaceCode,
-    required String workspaceId,
-    required String companyName,
-  }) async {
-    final functions = FirebaseFunctions.instance;
-    final result = await functions
-        .httpsCallable('createTenantProject', options: HttpsCallableOptions(timeout: const Duration(seconds: 540)))
-        .call({
-      'projectId': projectSeed,
-      'workspaceCode': workspaceCode,
-      'workspaceId': workspaceId,
-      'companyName': companyName,
-    }).timeout(const Duration(seconds: 540));
-
-    final data = result.data as Map<String, dynamic>;
-    if (data['success'] != true) {
-      throw Exception('Cloud Function returned error: ${data['error'] ?? 'unknown error'}');
-    }
-
-    final firebaseConfig = WorkspaceFirebaseConfig.fromMap(
-      Map<String, dynamic>.from((data['firebaseConfig'] as Map?) ?? const <String, dynamic>{}),
-    );
-
-    return _TenantProjectAllocation(
-      projectId: (data['projectId'] as String?) ?? projectSeed,
-      firebaseConfig: firebaseConfig,
-      displayName: (data['displayName'] as String?) ?? companyName,
-      projectNumber: (data['projectNumber'] as String?) ?? '',
-      projectIdChanged: data['projectIdChanged'] as bool? ?? false,
-      firebaseEnabled: data['firebaseEnabled'] as bool? ?? false,
-      apisEnabled: data['apisEnabled'] as bool? ?? false,
-      firestoreDbCreated: data['firestoreDbCreated'] as bool? ?? false,
-      authEnabled: data['authEnabled'] as bool? ?? false,
-      alreadyExisted: data['alreadyExisted'] as bool? ?? false,
-    );
-  }
-
   Future<void> _registerWorkspace({
     required String workspaceId,
     required String workspaceCode,
     required String workspaceSlug,
     required String companyName,
-    required String firebaseProjectId,
+    String? firebaseProjectId,
     required WorkspaceFirebaseConfig firebaseConfig,
+    required String firebasePlan,
     required String adminEmail,
     required String adminName,
     required String workspaceName,
@@ -570,11 +542,14 @@ class WorkspaceProvisioningClientService {
       'workspaceCode': workspaceCode,
       'workspaceSlug': workspaceSlug,
       'companyName': companyName,
-      'firebaseProjectId': firebaseProjectId,
+      'firebaseProjectId': (firebaseProjectId != null && firebaseProjectId.trim().isNotEmpty)
+          ? firebaseProjectId.trim()
+          : null,
       'companyPhone': companyPhone,
       'companyAddress': companyAddress,
       'industry': industry,
       'firebaseConfig': firebaseConfig.toMap(),
+      'firebasePlan': firebasePlan,
       'firebaseConfigured': false,
       'status': WorkspaceStatus.provisioning.value,
       'onboardingStatus': WorkspaceOnboardingStatus.configuring.value,

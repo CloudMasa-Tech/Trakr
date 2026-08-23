@@ -109,3 +109,53 @@ enum WorkspaceOnboardingStatus {
     }
   }
 }
+
+/// Derived operational health of a workspace, computed from its onboarding
+/// status and provisioning flags (rulesDeployed / authEnabled /
+/// firestoreDbCreated). Never stored — always derived at read time.
+enum WorkspaceHealth {
+  /// Fully provisioned and verified: all required flags true.
+  healthy,
+
+  /// Provisioning still in progress or not yet started.
+  provisioning,
+
+  /// Provisioning reported failure, or a ready workspace is missing
+  /// required configuration flags.
+  unhealthy;
+
+  String get label {
+    switch (this) {
+      case WorkspaceHealth.healthy:
+        return 'Healthy';
+      case WorkspaceHealth.provisioning:
+        return 'Provisioning';
+      case WorkspaceHealth.unhealthy:
+        return 'Unhealthy';
+    }
+  }
+
+  /// Derives health from a workspace's lifecycle state and flags.
+  static WorkspaceHealth derive({
+    required bool isActive,
+    required String? onboardingStatus,
+    required bool rulesDeployed,
+    required bool authEnabled,
+    required bool firestoreDbCreated,
+  }) {
+    if (onboardingStatus == 'failed') return WorkspaceHealth.unhealthy;
+    if (onboardingStatus == 'configuring' || onboardingStatus == 'pending') {
+      return WorkspaceHealth.provisioning;
+    }
+    // Ready workspaces: healthy only when every required setup flag is true.
+    if (onboardingStatus == 'ready' &&
+        rulesDeployed &&
+        authEnabled &&
+        firestoreDbCreated) {
+      return WorkspaceHealth.healthy;
+    }
+    // Ready but missing flags (or unknown status) — treat as unhealthy so the
+    // operator notices incomplete setups.
+    return WorkspaceHealth.unhealthy;
+  }
+}
