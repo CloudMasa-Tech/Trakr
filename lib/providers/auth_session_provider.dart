@@ -275,13 +275,19 @@ class AuthSessionProvider extends ChangeNotifier {
         _isLoading = true;
         notifyListeners();
         _scheduleAuthRestoreCheck();
-        _resolvePendingAuth();
+        // Do NOT call _resolvePendingAuth() here. During a signIn flow the
+        // null event fires (no signed-in user on a fresh tenant app) before
+        // signInWithEmailAndPassword completes. Completing the pending auth
+        // completer here would let signIn() resume before the actual user
+        // event fires, causing _role to still be null and throwing a false
+        // "Access denied" error. The signIn flow's completer must only be
+        // completed when a real user arrives and the role is resolved.
         return;
       }
       _role = null;
       _isLoading = false;
       notifyListeners();
-      _resolvePendingAuth();
+      // Do NOT call _resolvePendingAuth() here for the same reason as above.
       return;
     }
 
@@ -606,13 +612,27 @@ class AuthSessionProvider extends ChangeNotifier {
 
   Future<AppUserRole?> _loadRole(String uid) async {
     debugPrint('[AuthSessionProvider._loadRole] uid=$uid');
-    final doc = await _firestore.collection('users').doc(uid).get().timeout(
-      const Duration(seconds: 10),
-      onTimeout: () {
-        debugPrint('[AuthSessionProvider._loadRole] TIMEOUT reading users doc');
-        throw Exception('Connection timeout');
-      },
-    );
+    DocumentSnapshot<Map<String, dynamic>> doc;
+    try {
+      doc = await _firestore.collection('users').doc(uid).get().timeout(
+        const Duration(seconds: 10),
+        onTimeout: () {
+          debugPrint('[AuthSessionProvider._loadRole] TIMEOUT reading users doc');
+          throw Exception('Connection timeout');
+        },
+      );
+    } on FirebaseException catch (e) {
+      debugPrint(
+          '[AuthSessionProvider._loadRole] Firestore error reading users/$uid: '
+          'code=${e.code}, message=${e.message}');
+      if (e.code == 'permission-denied') {
+        debugPrint(
+            '[AuthSessionProvider._loadRole] PERMISSION_DENIED — Firestore rules '
+            'may deny read access to users/$uid. Check tenant Firestore rules '
+            'deployment.');
+      }
+      rethrow;
+    }
     final data = doc.data();
     final user = _auth.currentUser;
     if (user == null) {
@@ -909,9 +929,40 @@ Future<void> signIn({
       debugPrint(
           '[AuthSessionProvider.signIn] _handleAuthChanged completed, role=${_role?.value}');
       if (_role == null) {
+        // Build a diagnostic error message that helps future debugging.
+        final uid = user.uid;
+        String detail;
+        try {
+          final userDoc = await _firestore
+              .collection('users')
+              .doc(uid)
+              .get(const GetOptions(source: Source.server))
+              .timeout(const Duration(seconds: 5));
+          if (!userDoc.exists) {
+            detail = 'No users/$uid document found in this project\'s '
+                'Firestore. The provisioning step that creates this document '
+                'may have failed.';
+          } else {
+            final roleValue = userDoc.data()?['role'];
+            if (roleValue == null) {
+              detail = 'The users/$uid document exists but has no "role" field.';
+            } else {
+              detail = 'The users/$uid document has role="$roleValue" but '
+                  'role resolution could not interpret it.';
+            }
+          }
+        } on FirebaseException catch (e) {
+          detail = 'Permission denied reading users/$uid — Firestore rules '
+              'may not be deployed to this tenant project '
+              '(error: ${e.code}).';
+        } catch (_) {
+          detail = 'Could not read users/$uid to diagnose the issue.';
+        }
         _errorMessage ??=
-            'Access denied: Your account is not authorized in any role directory.';
-        debugPrint('[AuthSessionProvider.signIn] no role, signing out');
+            'Access denied: $detail '
+            'Please contact your administrator.';
+        debugPrint('[AuthSessionProvider.signIn] no role, signing out: '
+            '$_errorMessage');
         await _auth.signOut();
         await _clearActiveSession(user.uid);
         throw Exception(_errorMessage);
@@ -992,10 +1043,40 @@ Future<void> signIn({
       debugPrint(
           '[AuthSessionProvider.signInWithGoogle] _handleAuthChanged completed, role=${_role?.value}');
       if (_role == null) {
+        final uid = user.uid;
+        String detail;
+        try {
+          final userDoc = await _firestore
+              .collection('users')
+              .doc(uid)
+              .get(const GetOptions(source: Source.server))
+              .timeout(const Duration(seconds: 5));
+          if (!userDoc.exists) {
+            detail = 'No users/$uid document found in this project\'s '
+                'Firestore. The provisioning step that creates this document '
+                'may have failed.';
+          } else {
+            final roleValue = userDoc.data()?['role'];
+            if (roleValue == null) {
+              detail = 'The users/$uid document exists but has no "role" field.';
+            } else {
+              detail = 'The users/$uid document has role="$roleValue" but '
+                  'role resolution could not interpret it.';
+            }
+          }
+        } on FirebaseException catch (e) {
+          detail = 'Permission denied reading users/$uid — Firestore rules '
+              'may not be deployed to this tenant project '
+              '(error: ${e.code}).';
+        } catch (_) {
+          detail = 'Could not read users/$uid to diagnose the issue.';
+        }
         _errorMessage ??=
-            'Access denied: This Google account is not authorized in any role directory.';
+            'Access denied: $detail '
+            'Please contact your administrator.';
         debugPrint(
-            '[AuthSessionProvider.signInWithGoogle] no role, signing out');
+            '[AuthSessionProvider.signInWithGoogle] no role, signing out: '
+            '$_errorMessage');
         await _auth.signOut();
         await _googleSignIn?.signOut();
         await _clearActiveSession(user.uid);

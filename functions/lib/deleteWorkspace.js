@@ -108,9 +108,21 @@ async function handleDeleteWorkspace(data, callerEmail) {
             const deletedAt = data.deletedAt?.toDate?.() || new Date(data.deletedAt);
             const daysSinceDeletion = (Date.now() - deletedAt.getTime()) / (1000 * 60 * 60 * 24);
             if (daysSinceDeletion < 30) {
+                // The GCP project ID is in Google's 30-day soft-delete grace period.
+                // This is NOT a reason to abort: the workspace record may still exist
+                // in master Firestore (e.g. a previous deletion attempt failed partway,
+                // or this is a retry). Per the lifecycle policy, we must proceed to
+                // clean up the master Firestore records only — never mutate the GCP
+                // project again. The CRM lifecycle-state check below is fail-closed
+                // and will skip the GCP delete for projects already pending deletion.
                 const daysRemaining = Math.ceil(30 - daysSinceDeletion);
-                throw new https_1.HttpsError('failed-precondition', `This project ID was deleted ${Math.floor(daysSinceDeletion)} days ago and is in Google's 30-day grace period. ` +
-                    `Please wait ${daysRemaining} more days before reusing this project ID, or use a different project ID.`);
+                v2_1.logger.info('deleteWorkspace: project ID is in Google 30-day grace period — ' +
+                    'proceeding with Firestore-only cleanup', {
+                    projectId,
+                    workspaceId: wsId,
+                    daysSinceDeletion: Math.floor(daysSinceDeletion),
+                    daysRemaining,
+                });
             }
         }
     }

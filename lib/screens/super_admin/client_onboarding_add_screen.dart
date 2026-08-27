@@ -62,7 +62,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
   WorkspaceFirebaseConfig? _firebaseConfig;
   bool _firebaseConfirmed = false;
 
-  // IAM setup: the user must run two gcloud role grants on the tenant project
+  // IAM setup: the user must run three gcloud role grants on the tenant project
   // before provisioning (required by the deployTenantRules Cloud Function).
   bool _iamConfirmed = false;
 
@@ -115,16 +115,19 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
     return true;
   }
 
-  /// The two gcloud IAM grants required on the tenant project, with the
-  /// project ID interpolated live from the project ID field.
+  /// The three gcloud IAM grants required on the tenant project, combined into
+  /// a single command with `&&` so it can be pasted and run in one go.
   String get _iamCommands {
     final projectId = _firebaseProjectIdCtrl.text.trim();
     return 'gcloud projects add-iam-policy-binding $projectId '
         '--member="serviceAccount:$_masterServiceAccountEmail" '
-        '--role="roles/firebaserules.admin"\n'
+        '--role="roles/firebaserules.admin" && '
         'gcloud projects add-iam-policy-binding $projectId '
         '--member="serviceAccount:$_masterServiceAccountEmail" '
-        '--role="roles/datastore.indexAdmin"';
+        '--role="roles/datastore.indexAdmin" && '
+        'gcloud projects add-iam-policy-binding $projectId '
+        '--member="serviceAccount:$_masterServiceAccountEmail" '
+        '--role="roles/datastore.user"';
   }
 
   @override
@@ -520,8 +523,8 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
           ),
           const SizedBox(height: 4),
           const Text(
-            'Grant these roles so TRAKR can deploy Firestore rules and '
-            'indexes to this project automatically:',
+            'Grant these three roles so TRAKR can deploy Firestore rules, '
+            'indexes, and read/write data automatically:',
             style: TextStyle(color: kCoSubtle, fontSize: 11.5, height: 1.4),
           ),
           const SizedBox(height: 8),
@@ -552,7 +555,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(
-                        content: Text('gcloud commands copied to clipboard'),
+                        content: Text('gcloud command copied to clipboard'),
                         behavior: SnackBarBehavior.floating,
                         duration: Duration(seconds: 2),
                       ),
@@ -560,7 +563,7 @@ class _ClientOnboardingAddScreenState extends State<ClientOnboardingAddScreen> {
                   }
                 },
                 icon: const Icon(Icons.copy_rounded, size: 14),
-                label: const Text('Copy commands',
+                label: const Text('Copy command',
                     style: TextStyle(fontSize: 11.5)),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: kCoAccent,

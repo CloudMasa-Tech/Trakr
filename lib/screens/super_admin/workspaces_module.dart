@@ -138,12 +138,23 @@ class _WorkspacesModuleState extends State<WorkspacesModule> {
     }
   }
 
+  /// Retries provisioning for an incomplete or partially-failed workspace.
+  ///
+  /// This is also the backfill mechanism for the "Access denied: not authorized
+  /// in any role directory" bug: if the provisioning succeeded (Auth user
+  /// created + email sent) but the Firestore role documents (`users/{uid}`,
+  /// `admins/{workspaceId}`) were never written (e.g. due to a timing race or
+  /// missing IAM role), re-running provisioning will detect the existing Auth
+  /// user, recover it, and idempotently write the missing Firestore documents.
+  /// The Company Admin invite email is re-sent if it failed previously.
   Future<void> _retryProvisioning(Workspace workspace) async {
     final confirmed = await _confirm(
       title: 'Retry provisioning for ${workspace.companyName}?',
       message: 'This will resume provisioning for the workspace using the '
           'existing Firebase project (${workspace.firebaseProjectId}). '
-          'The Company Admin invite email will be re-sent if it failed previously.',
+          'The Company Admin invite email will be re-sent if it failed previously. '
+          'This also repairs any missing Firestore role documents '
+          '(users/admins collections) if the original provisioning partially failed.',
       confirmLabel: 'Retry',
       destructive: false,
     );
