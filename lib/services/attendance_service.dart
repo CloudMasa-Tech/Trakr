@@ -13,14 +13,24 @@ import '../services/permission_service.dart';
 import 'notification_service.dart';
 
 class AttendanceService {
-  AttendanceService({FirebaseContext? context})
-      : _context = context ?? FirebaseContextProvider.current,
-        _logService = AttendanceLogService(context: context),
-        _permissionService = PermissionService(context: context);
+  AttendanceService({FirebaseContext? context}) : _boundContext = context;
 
-  final FirebaseContext _context;
-  final AttendanceLogService _logService;
-  final PermissionService _permissionService;
+  // When no explicit context is supplied, resolve the ACTIVE Firebase context
+  // live at call time. This ensures the service follows the Master ↔ tenant
+  // swap even if it was constructed earlier (e.g. a dashboard widget built
+  // before the tenant project was activated), so writes like `qr_tokens` /
+  // `notifications` always hit the signed-in tenant project instead of the
+  // Master control-plane (whose rules deny non-superadmin writes).
+  final FirebaseContext? _boundContext;
+
+  FirebaseContext get _context =>
+      _boundContext ?? FirebaseContextProvider.current;
+
+  AttendanceLogService get _logService =>
+      AttendanceLogService(context: _context);
+
+  PermissionService get _permissionService =>
+      PermissionService(context: _context);
 
   FirebaseFirestore get _db => _context.firestore;
   static const Duration _minimumCheckOutDelay = Duration(hours: 4);

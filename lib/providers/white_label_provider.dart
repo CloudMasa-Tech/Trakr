@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import '../firebase/firebase_context.dart';
 import '../firebase/firebase_context_provider.dart';
@@ -39,8 +40,27 @@ class WhiteLabelProvider extends ChangeNotifier {
     if (!isInitial && _context.app.name == context.app.name) return;
     _context = context;
     _service = WhiteLabelService(context: context);
-    listenToConfig();
+    if (_isMasterControlPlane(context)) {
+      // The Master control-plane project has no per-tenant white-label config
+      // for a regular user to read (reads are super-admin only). Skip the
+      // stream entirely to avoid a permission-denied error at startup.
+      _configSubscription?.cancel();
+      _configSubscription = null;
+      _config = WhiteLabelModel.empty;
+    } else {
+      listenToConfig();
+    }
     if (!isInitial) notifyListeners();
+  }
+
+  /// True when [context] is bound to the default (Master control-plane) app
+  /// rather than a named tenant app.
+  bool _isMasterControlPlane(FirebaseContext context) {
+    try {
+      return context.app.name == Firebase.app().name;
+    } catch (_) {
+      return true;
+    }
   }
 
   void listenToConfig() {

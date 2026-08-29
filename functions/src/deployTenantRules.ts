@@ -76,63 +76,66 @@ async function handleDeployTenantRules(
     try {
       logger.info('deployTenantRules: starting deployment', { tenantProjectId });
 
-      // ---- Load Rules & Indexes from bundled assets ----
-      // The prebuild script (scripts/copy-assets.js) copies firestore.rules
-      // and firestore.indexes.json from the repo root into src/assets/ before
-      // tsc runs. The compiled output lands in lib/assets/ at runtime.
-      const fs = require('fs');
-      const path = require('path');
-
-      // __dirname at runtime is the directory containing this compiled JS file,
-      // e.g. /workspace/lib/ — assets live alongside it in /workspace/lib/assets/.
-      const assetsDir = path.join(__dirname, 'assets');
-      const rulesPath = path.join(assetsDir, 'firestore.rules');
-      const indexesPath = path.join(assetsDir, 'firestore.indexes.json');
-
-      // Startup log: confirm resolved paths and file sizes so path issues
-      // are visible in Cloud Logging instead of failing silently.
-      const rulesExists = fs.existsSync(rulesPath);
-      const indexesExists = fs.existsSync(indexesPath);
-      const rulesSize = rulesExists ? fs.statSync(rulesPath).size : -1;
-      const indexesSize = indexesExists ? fs.statSync(indexesPath).size : -1;
-
-      logger.info('deployTenantRules: asset resolution', {
-        assetsDir,
-        rulesPath,
-        indexesPath,
-        rulesExists,
-        indexesExists,
-        rulesSize,
-        indexesSize,
-        dirname: __dirname,
-        cwd: process.cwd(),
-      });
-
-      if (!rulesExists) {
-        throw new Error(
-          `firestore.rules not found at ${rulesPath}. ` +
-          `Ensure the prebuild script (npm run prebuild) ran before tsc. ` +
-          `Resolved from __dirname=${__dirname}, assetsDir=${assetsDir}`
-        );
-      }
-      if (!indexesExists) {
-        throw new Error(
-          `firestore.indexes.json not found at ${indexesPath}. ` +
-          `Ensure the prebuild script (npm run prebuild) ran before tsc. ` +
-          `Resolved from __dirname=${__dirname}, assetsDir=${assetsDir}`
-        );
-      }
-
-      const rulesContent = fs.readFileSync(rulesPath, 'utf8');
-      const indexesContent = JSON.parse(fs.readFileSync(indexesPath, 'utf8'));
-
-      logger.info('deployTenantRules: assets loaded', {
-        rulesSize: rulesContent.length,
-        indexesSize: indexesContent.indexes?.length ?? 0,
-      });
-
       // ---- Get OAuth2 Access Token ----
       const accessToken = await getMasterAccessToken();
+
+      // ---- Fetch Active Ruleset from Master Project ----
+      logger.info('Fetching live rules from master project', { masterProjectId });
+      
+      const masterReleaseRes = await fetch(
+        `https://firebaserules.googleapis.com/v1/projects/${masterProjectId}/releases/cloud.firestore`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        }
+      );
+      if (!masterReleaseRes.ok) {
+        const errText = await masterReleaseRes.text();
+        throw new Error(`Failed to fetch master project release: HTTP ${masterReleaseRes.status} ${errText}`);
+      }
+      const masterRelease = await masterReleaseRes.json() as any;
+      const masterRulesetName = masterRelease.rulesetName;
+      if (!masterRulesetName) {
+        throw new Error('Master project cloud.firestore release has no rulesetName');
+      }
+
+      const masterRulesetRes = await fetch(
+        `https://firebaserules.googleapis.com/v1/${masterRulesetName}`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` }
+        }
+      );
+      if (!masterRulesetRes.ok) {
+        const errText = await masterRulesetRes.text();
+        throw new Error(`Failed to fetch master project ruleset ${masterRulesetName}: HTTP ${masterRulesetRes.status} ${errText}`);
+      }
+      const masterRuleset = await masterRulesetRes.json() as any;
+      
+      let rulesContent = '';
+      if (masterRuleset.source && masterRuleset.source.files && masterRuleset.source.files.length > 0) {
+        rulesContent = masterRuleset.source.files[0].content;
+      }
+      if (!rulesContent) {
+        throw new Error(`Master ruleset ${masterRulesetName} is empty or missing source.files content`);
+      }
+
+      logger.info('deployTenantRules: Master rules fetched successfully', {
+        masterRulesetName,
+        rulesSize: rulesContent.length,
+      });
+
+      // ---- Load Indexes from bundled assets ----
+      const fs = require('fs');
+      const path = require('path');
+      const assetsDir = path.join(__dirname, 'assets');
+      const indexesPath = path.join(assetsDir, 'firestore.indexes.json');
+
+      if (!fs.existsSync(indexesPath)) {
+        throw new Error(
+          `firestore.indexes.json not found at ${indexesPath}. ` +
+          `Ensure the prebuild script (npm run prebuild) ran before tsc.`
+        );
+      }
+      const indexesContent = JSON.parse(fs.readFileSync(indexesPath, 'utf8'));
 
       // ---- Step 1: Create Ruleset ----
       const rulesetUrl = `https://firebaserules.googleapis.com/v1/projects/${tenantProjectId}/rulesets`;

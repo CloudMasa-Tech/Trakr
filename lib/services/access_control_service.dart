@@ -139,6 +139,7 @@ class AccessControlService {
     String? companyId,
     int level = 10,
     bool isManagerial = false,
+    bool canBeReportingManager = false,
   }) async {
     final resolvedCompanyId = companyId ?? await _resolveCompanyId();
     final ref = _firestore.collection(_rolesCollection).doc();
@@ -148,6 +149,7 @@ class AccessControlService {
       'permissionIds': permissionIds,
       'isSystem': false,
       'isManagerial': isManagerial,
+      'canBeReportingManager': canBeReportingManager,
       'companyId': resolvedCompanyId,
       'level': level,
       'createdAt': FieldValue.serverTimestamp(),
@@ -178,6 +180,7 @@ class AccessControlService {
     List<String>? permissionIds,
     int? level,
     bool? isManagerial,
+    bool? canBeReportingManager,
   }) async {
     final data = <String, dynamic>{
       'updatedAt': FieldValue.serverTimestamp(),
@@ -187,6 +190,9 @@ class AccessControlService {
     if (permissionIds != null) data['permissionIds'] = permissionIds;
     if (level != null) data['level'] = level;
     if (isManagerial != null) data['isManagerial'] = isManagerial;
+    if (canBeReportingManager != null) {
+      data['canBeReportingManager'] = canBeReportingManager;
+    }
     await _firestore.collection(_rolesCollection).doc(roleId).update(data);
   }
 

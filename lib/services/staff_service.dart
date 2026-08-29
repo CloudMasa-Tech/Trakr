@@ -60,9 +60,16 @@ class StaffService {
       // Clean up secondary app
       await secondaryApp.delete();
 
-      // 3. Save staff record to Firestore
+      // 3. Save staff record to Firestore. The `salary` and `position` fields
+      // are intentionally excluded from new-employee writes: they are no
+      // longer captured during onboarding. The Staff model keeps reading them
+      // for backward compatibility with existing documents. (Payroll still
+      // reads `salary` from this doc for existing records.)
+      final staffMap = staff.toMap()
+        ..remove('salary')
+        ..remove('position');
       final docRef =
-          await _firestore.collection(collectionName).add(staff.toMap());
+          await _firestore.collection(collectionName).add(staffMap);
 
       // Register the login identity so the staff can sign in with their email
       // without entering a workspace code (best-effort, never blocks creation).

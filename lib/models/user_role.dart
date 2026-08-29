@@ -13,6 +13,7 @@ class UserRole {
   final List<String> permissionIds;
   final bool isSystem;
   final bool isManagerial;
+  final bool canBeReportingManager;
   final String? companyId;
   final int level;
   final DateTime? createdAt;
@@ -25,6 +26,7 @@ class UserRole {
     this.permissionIds = const [],
     this.isSystem = false,
     this.isManagerial = false,
+    this.canBeReportingManager = false,
     this.companyId,
     this.level = 10,
     this.createdAt,
@@ -54,6 +56,7 @@ class UserRole {
           : const [],
       isSystem: data['isSystem'] == true,
       isManagerial: data['isManagerial'] == true,
+      canBeReportingManager: data['canBeReportingManager'] == true,
       companyId: data['companyId'] is String ? data['companyId'] as String : null,
       level: level,
       createdAt: data['createdAt'] is Timestamp
@@ -72,6 +75,7 @@ class UserRole {
       'permissionIds': permissionIds,
       'isSystem': isSystem,
       'isManagerial': isManagerial,
+      'canBeReportingManager': canBeReportingManager,
       'companyId': companyId,
       'level': level,
       'createdAt': createdAt != null
@@ -86,6 +90,7 @@ class UserRole {
     String? description,
     List<String>? permissionIds,
     bool? isManagerial,
+    bool? canBeReportingManager,
   }) {
     return UserRole(
       id: id,
@@ -94,6 +99,7 @@ class UserRole {
       permissionIds: permissionIds ?? this.permissionIds,
       isSystem: isSystem,
       isManagerial: isManagerial ?? this.isManagerial,
+      canBeReportingManager: canBeReportingManager ?? this.canBeReportingManager,
       companyId: companyId,
       level: level,
       createdAt: createdAt,

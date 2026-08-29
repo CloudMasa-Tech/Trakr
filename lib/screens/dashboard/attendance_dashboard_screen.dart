@@ -58,6 +58,8 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
           late = s['late'] ?? 0;
         });
       }
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('AttendanceDashboard today stats stream error: $e\n$st');
     });
 
     _dirSub = _svc.getDirectoryStatsStream().listen((s) {
@@ -67,6 +69,8 @@ class _AttendanceDashboardScreenState extends State<AttendanceDashboardScreen> {
           totalManagers = s['totalManagers'] ?? 0;
         });
       }
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('AttendanceDashboard directory stats stream error: $e\n$st');
     });
   }
 

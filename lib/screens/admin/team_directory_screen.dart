@@ -1216,7 +1216,6 @@ class _TeamDirectoryScreenState extends State<TeamDirectoryScreen> {
           phone: phone,
           employeeId: employeeId,
           department: department,
-          position: position,
           staffCount: int.tryParse(_field(row, const ['staffcount'])) ?? 0,
           maxStaff:
               int.tryParse(_field(row, const ['maxstaff', 'capacity'])) ?? 20,

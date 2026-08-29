@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Copies firestore.rules and firestore.indexes.json from the repo root
+ * Copies firestore.tenant.rules and firestore.indexes.json from the repo root
  * into functions/src/assets/ AND functions/lib/assets/.
  *
  * - "prebuild": copies repo-root files into src/assets/ (source of truth)
@@ -22,7 +22,6 @@ const SRC_ASSETS_DIR = path.join(__dirname, '..', 'src', 'assets');
 const LIB_ASSETS_DIR = path.join(__dirname, '..', 'lib', 'assets');
 
 const FILES = [
-  { src: 'firestore.rules', dest: 'firestore.rules' },
   { src: 'firestore.indexes.json', dest: 'firestore.indexes.json' },
 ];
 

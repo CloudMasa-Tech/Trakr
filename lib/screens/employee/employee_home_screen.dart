@@ -9,6 +9,7 @@ import 'package:intl/intl.dart';
 import 'dart:typed_data';
 import 'package:provider/provider.dart';
 
+import '../../firebase/firebase_context_provider.dart';
 import '../../models/attendance_model.dart';
 import '../../models/leave_request.dart';
 import '../../models/staff.dart';
@@ -171,12 +172,16 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
           _recentActivity = records.take(5).toList();
           _todayRecord = records.isNotEmpty ? records.first : null;
         });
+      }, onError: (Object e, StackTrace st) {
+        debugPrint('EmployeeHome activity stream error: $e\n$st');
       });
       _historySub = _attendanceService
           .getAttendanceHistoryStream(employeeId, limit: 90)
           .listen((records) {
         if (!mounted) return;
         _updateMonthlySummary(records);
+      }, onError: (Object e, StackTrace st) {
+        debugPrint('EmployeeHome history stream error: $e\n$st');
       });
       return;
     }
@@ -188,6 +193,8 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
         _recentActivity = records.take(5).toList();
         _todayRecord = null;
       });
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('EmployeeHome activity stream error: $e\n$st');
     });
   }
 
@@ -222,7 +229,7 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
   }
 
   void _listenAttendanceRules() {
-    _rulesSub = FirebaseFirestore.instance
+    _rulesSub = FirebaseContextProvider.current.firestore
         .collection('geo_config')
         .doc('default')
         .snapshots()
@@ -234,6 +241,8 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
             data['checkInStart']?.toString() ?? _checkInStartRule;
         _checkOutEndRule = data['checkOutEnd']?.toString() ?? _checkOutEndRule;
       });
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('EmployeeHome._listenAttendanceRules error: $e\n$st');
     });
   }
 

@@ -764,11 +764,15 @@ class NotificationService {
             'Successfully triggered push notification to Vercel backend.');
         return true;
       } else {
-        debugPrint('Failed to trigger push notification: ${response.body}');
+        // Push is a best-effort secondary channel (email is primary). Log
+        // quietly and never surface the backend body or interrupt the caller.
+        debugPrint(
+            'Push notification not sent (HTTP ${response.statusCode}). '
+            'Continuing silently — email is the primary channel.');
         return false;
       }
     } catch (e) {
-      debugPrint('Error calling Vercel backend: $e');
+      debugPrint('Push notification skipped (best-effort): $e');
       return false;
     }
   }
@@ -794,7 +798,9 @@ class NotificationService {
         debugPrint('Successfully triggered broadcast push to Vercel backend.');
         return true;
       } else {
-        debugPrint('Failed to trigger broadcast push: ${response.body}');
+        debugPrint(
+            'Broadcast push not sent (HTTP ${response.statusCode}). '
+            'Continuing silently.');
         return false;
       }
     } catch (e) {

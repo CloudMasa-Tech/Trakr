@@ -595,6 +595,7 @@ class _RoleEditorDialogState extends State<_RoleEditorDialog> {
   late final TextEditingController _levelCtrl;
   late final Set<String> _selected;
   bool _isManagerial = false;
+  bool _canBeReportingManager = false;
   bool _submitting = false;
   final _accessControl = AccessControlService();
   late final Stream<List<AppPermission>> _permissionsStream;
@@ -611,7 +612,25 @@ class _RoleEditorDialogState extends State<_RoleEditorDialog> {
     _levelCtrl = TextEditingController(
         text: widget.role?.level.toString() ?? '10');
     _isManagerial = widget.role?.isManagerial ?? false;
+    _canBeReportingManager = _initialCanBeReportingManager(widget.role);
     _selected = {...?widget.role?.permissionIds};
+  }
+
+  /// Defaults the reporting-manager flag to true for the built-in
+  /// admin / company_admin / manager roles (and any role already marked
+  /// managerial), so existing behaviour is preserved even before the
+  /// backfill script has written the field. Custom roles default to false.
+  bool _initialCanBeReportingManager(UserRole? role) {
+    if (role == null) return false;
+    if (role.canBeReportingManager) return true;
+    final id = role.id.toLowerCase();
+    if (id == 'admin' ||
+        id == 'company_admin' ||
+        id == 'manager' ||
+        role.isManagerial) {
+      return true;
+    }
+    return false;
   }
 
   @override
@@ -811,7 +830,7 @@ class _RoleEditorDialogState extends State<_RoleEditorDialog> {
                             ),
                           ),
                           subtitle: Text(
-                            'Users with this role can be chosen as a reporting manager (Reports to).',
+                            'Marks this as a leadership role that can oversee a team.',
                             style: TextStyle(
                                 color: colors.textMuted, fontSize: 12),
                           ),
@@ -819,6 +838,32 @@ class _RoleEditorDialogState extends State<_RoleEditorDialog> {
                           onChanged: _submitting
                               ? null
                               : (v) => setState(() => _isManagerial = v),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Material(
+                        color: Colors.transparent,
+                        child: SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          dense: true,
+                          title: Text(
+                            'Eligible as reporting manager',
+                            style: TextStyle(
+                              color: colors.textPrimary,
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          subtitle: Text(
+                            'Users with this role appear in the "Reports to" dropdown when onboarding employees.',
+                            style: TextStyle(
+                                color: colors.textMuted, fontSize: 12),
+                          ),
+                          value: _canBeReportingManager,
+                          onChanged: _submitting
+                              ? null
+                              : (v) =>
+                                  setState(() => _canBeReportingManager = v),
                         ),
                       ),
                       const SizedBox(height: 18),
@@ -998,6 +1043,7 @@ class _RoleEditorDialogState extends State<_RoleEditorDialog> {
           permissionIds: _selected.toList(),
           level: level,
           isManagerial: _isManagerial,
+          canBeReportingManager: _canBeReportingManager,
         );
       } else {
         await _accessControl.createRole(
@@ -1006,6 +1052,7 @@ class _RoleEditorDialogState extends State<_RoleEditorDialog> {
           permissionIds: _selected.toList(),
           level: level,
           isManagerial: _isManagerial,
+          canBeReportingManager: _canBeReportingManager,
         );
       }
       if (mounted) Navigator.of(context).pop(true);

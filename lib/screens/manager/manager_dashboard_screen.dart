@@ -13,6 +13,7 @@ import '../../models/leave_request.dart';
 import '../../models/permission_request.dart';
 import '../../models/staff.dart';
 import '../../providers/white_label_provider.dart';
+import '../../firebase/firebase_context_provider.dart';
 import '../../services/anniversary_greeting_service.dart';
 import '../../services/attendance_service.dart';
 import '../../services/leave_service.dart';
@@ -537,7 +538,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       identifiers.add(email);
     }
 
-    _teamSub = FirebaseFirestore.instance
+    _teamSub = FirebaseContextProvider.current.firestore
         .collection('staff')
         .where('reportsTo', whereIn: identifiers)
         .snapshots()
@@ -546,6 +547,8 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       setState(() {
         _totalAssignedStaff = snapshot.docs.length;
       });
+    }, onError: (Object e, StackTrace st) {
+      debugPrint('ManagerDashboard team stream error: $e\n$st');
     });
   }
 

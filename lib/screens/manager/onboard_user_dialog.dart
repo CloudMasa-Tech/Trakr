@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import '../../models/staff.dart';
 import '../../models/user_role.dart';
 import '../../providers/auth_session_provider.dart';
+import '../../firebase/firebase_context_provider.dart';
 import '../../services/access_control_service.dart';
 import '../../services/email_service.dart';
 import '../../services/manager_account_service.dart';
@@ -60,8 +61,6 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   final _emailCtrl = TextEditingController();
   final _phoneCtrl = TextEditingController();
   final _employeeIdCtrl = TextEditingController();
-  final _positionCtrl = TextEditingController();
-  final _salaryCtrl = TextEditingController();
   final _passwordCtrl = TextEditingController();
   final _maxStaffCtrl = TextEditingController(text: '20');
   String _selectedDialCode = '+91';
@@ -92,8 +91,10 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   String? _selectedDepartment;
 
   String? _selectedManagerName;
+  String? _selectedManagerUserId;
   List<_ManagerOption> _managerOptions = const [];
   bool _loadingManagers = true;
+  String? _managerError;
 
   bool get _canAssignManager => widget.onboarderRole == AppUserRole.admin;
 
@@ -117,37 +118,58 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     _emailCtrl.dispose();
     _phoneCtrl.dispose();
     _employeeIdCtrl.dispose();
-    _positionCtrl.dispose();
-    _salaryCtrl.dispose();
     _passwordCtrl.dispose();
     _maxStaffCtrl.dispose();
     _addressCtrl.dispose();
     super.dispose();
   }
 
+  /// Loads the "Reports to" candidates. A user is eligible when their assigned
+  /// role (`users/{uid}.roleId` → `roles/{roleId}.canBeReportingManager`) is
+  /// flagged `canBeReportingManager: true`. The list is independent of the
+  /// currently selected "Assign role" — every eligible manager/Company Admin
+  /// (or custom role with the flag enabled) appears as a reporting option.
   Future<void> _loadManagers() async {
+    _managerError = null;
     try {
-      final snap =
-          await FirebaseFirestore.instance.collection('managers').get();
+      final roles = await _accessControl.getAllRoles().first;
+      final eligibleRoleIds = roles
+          .where((r) => r.canBeReportingManager)
+          .map((r) => r.id)
+          .toList();
+      final roleNameById = <String, String>{
+        for (final r in roles) r.id: r.name,
+      };
+
       final options = <_ManagerOption>[];
-      for (final doc in snap.docs) {
-        final data = doc.data();
-        final name = (data['name'] as String? ?? '').trim();
-        final email = (data['email'] as String? ?? '').trim();
-        if (name.isEmpty) continue;
-        options.add(_ManagerOption(name: name, email: email));
+      if (eligibleRoleIds.isNotEmpty) {
+        // The `users` collection is already scoped to this tenant's Firebase
+        // project, so no companyId filter is required here.
+        final snap = await FirebaseContextProvider.current.firestore
+            .collection('users')
+            .where('roleId', whereIn: eligibleRoleIds.take(30).toList())
+            .get();
+        for (final doc in snap.docs) {
+          final data = doc.data();
+          final name = (data['name'] as String? ?? '').trim();
+          if (name.isEmpty) continue;
+          final roleId = (data['roleId'] as String? ?? '').trim();
+          options.add(_ManagerOption(
+            name: name,
+            email: (data['email'] as String? ?? '').trim(),
+            roleName: roleNameById[roleId] ?? roleId,
+            userId: doc.id,
+          ));
+        }
       }
 
-      final hasCurrent = options.any(
-          (o) => o.name.toLowerCase() == _selectedManagerName?.toLowerCase());
-      if (!hasCurrent && _selectedManagerName != null) {
-        options.insert(
-          0,
-          _ManagerOption(
-            name: _selectedManagerName!,
-            email: widget.currentManagerEmail,
-          ),
-        );
+      // A previously selected "Reports to" that is no longer eligible is
+      // cleared so the admin must reselect.
+      final selectedName = _selectedManagerName;
+      if (selectedName != null &&
+          !options.any((o) => o.name == selectedName)) {
+        _selectedManagerName = null;
+        _selectedManagerUserId = null;
       }
 
       options
@@ -158,9 +180,14 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
         _managerOptions = options;
         _loadingManagers = false;
       });
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('OnboardUserDialog._loadManagers failed: $e\n$st');
       if (!mounted) return;
-      setState(() => _loadingManagers = false);
+      setState(() {
+        _managerError =
+            'Could not load managers. Check your connection and try again.';
+        _loadingManagers = false;
+      });
     }
   }
 
@@ -273,7 +300,6 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     final password = _passwordCtrl.text.trim();
     final phone = '$_selectedDialCode ${_phoneCtrl.text.trim()}'.trim();
     final nationality = _selectedNationality!;
-    final salary = _parseSalary();
     var emailSent = false;
     String? emailError;
 
@@ -291,13 +317,13 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
           id: '',
           name: name,
           email: email,
+          companyId: FirebaseContextProvider.current.app.name,
           phone: phone,
           department: department,
-          position: _positionCtrl.text.trim(),
+          position: '',
           employeeId: _employeeIdCtrl.text.trim(),
           joinDate: _joinDate,
           reportsTo: _selectedManagerName,
-          salary: salary,
           isActive: _isActive,
           password: _isActive ? password : null,
           hasRegistered: _isActive,
@@ -312,11 +338,12 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
           roleId: selectedRole.id,
           roleName: selectedRole.name,
           roleLevel: selectedRole.level,
+          reportsToUserId: _selectedManagerUserId,
         );
 
         await _staffService.addStaff(staff);
       } else {
-        final managers = FirebaseFirestore.instance.collection('managers');
+        final managers = FirebaseContextProvider.current.firestore.collection('managers');
         final existing =
             await managers.where('email', isEqualTo: email).limit(1).get();
         if (existing.docs.isNotEmpty) {
@@ -333,12 +360,10 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             phone: phone,
             employeeId: _employeeIdCtrl.text.trim(),
             department: department,
-            position: _positionCtrl.text.trim(),
             staffCount: 0,
             maxStaff: int.tryParse(_maxStaffCtrl.text.trim()) ?? 20,
             joinDate: _joinDate,
             status: 'active',
-            salary: salary,
             photoUrl: _photoUrl,
             bloodGroup: _selectedBloodGroup,
             gender: _selectedGender,
@@ -357,10 +382,8 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             'phone': phone,
             'employeeId': _employeeIdCtrl.text.trim(),
             'department': department,
-            'position': _positionCtrl.text.trim(),
             'joinDate': Timestamp.fromDate(_joinDate),
             'status': 'inactive',
-            'salary': salary,
             'photoUrl': _photoUrl,
             'staffCount': 0,
             'maxStaff': int.tryParse(_maxStaffCtrl.text.trim()) ?? 20,
@@ -398,7 +421,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
           );
 
           // Save credentials notification in Firestore
-          await FirebaseFirestore.instance.collection('notifications').add({
+          await FirebaseContextProvider.current.firestore.collection('notifications').add({
             'recipient': email,
             'type': 'Email',
             'content':
@@ -417,7 +440,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
           );
 
           // Save security notification in Firestore
-          await FirebaseFirestore.instance.collection('notifications').add({
+          await FirebaseContextProvider.current.firestore.collection('notifications').add({
             'recipient': email,
             'type': 'Security',
             'content':
@@ -525,25 +548,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                         ),
                       ),
                       const SizedBox(height: 14),
-                      _twoCol(
-                        _buildDepartmentDropdown(),
-                        _field(
-                          controller: _positionCtrl,
-                          label: 'Position',
-                          hint: 'Software Engineer',
-                          required: true,
-                        ),
-                      ),
-                      const SizedBox(height: 14),
-                      _field(
-                        controller: _salaryCtrl,
-                        label: 'Salary',
-                        hint: '50000',
-                        keyboardType: const TextInputType.numberWithOptions(
-                          decimal: true,
-                        ),
-                        validator: _salaryValidator,
-                      ),
+                      _buildDepartmentDropdown(),
                       const SizedBox(height: 14),
                       if (_assignedRole == AppUserRole.employee)
                         _twoCol(
@@ -654,32 +659,47 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
-          TextButton(
-            onPressed: _submitting ? null : () => Navigator.of(context).pop(),
-            style: TextButton.styleFrom(foregroundColor: _subtle),
-            child: const Text('Cancel'),
-          ),
-          const SizedBox(width: 8),
-          FilledButton.icon(
-            onPressed: _submitting ? null : _submit,
-            style: FilledButton.styleFrom(
-              backgroundColor: _accent,
-              padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 14),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(10),
+          Flexible(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: Wrap(
+                alignment: WrapAlignment.end,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 8,
+                children: [
+                  TextButton(
+                    onPressed: _submitting
+                        ? null
+                        : () => Navigator.of(context).pop(),
+                    style: TextButton.styleFrom(foregroundColor: _subtle),
+                    child: const Text('Cancel'),
+                  ),
+                  FilledButton.icon(
+                    onPressed: _submitting ? null : _submit,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: _accent,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 22, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    icon: _submitting
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Icon(Icons.check_rounded, size: 18),
+                    label:
+                        Text(_submitting ? 'Onboarding…' : 'Onboard user'),
+                  ),
+                ],
               ),
             ),
-            icon: _submitting
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Icon(Icons.check_rounded, size: 18),
-            label: Text(_submitting ? 'Onboarding…' : 'Onboard user'),
           ),
         ],
       ),
@@ -897,69 +917,48 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                 style: TextStyle(color: _subtle, fontSize: 12),
               )
             else
-              LayoutBuilder(
-                builder: (context, c) {
-                  final stack = c.maxWidth < 480;
-                  final tiles = [
-                    for (final role in roles)
-                      _RoleTile(
-                        title: role.name,
-                        subtitle: role.description.trim().isNotEmpty
-                            ? role.description
-                            : (role.isManagerial
-                                ? 'Manages a team.'
-                                : 'Individual contributor role.'),
-                        icon: role.isManagerial
-                            ? Icons.supervisor_account_rounded
-                            : Icons.engineering_rounded,
-                        selected: _selectedUserRole?.id == role.id,
-                        enabled:
-                            !_submitting && (!role.isManagerial || _canAssignManager),
-                        onTap: () => setState(() => _selectedUserRole = role),
-                      ),
-                  ];
-                  if (stack) {
-                    return Column(
-                      children: [
-                        for (var i = 0; i < tiles.length; i++) ...[
-                          if (i > 0) const SizedBox(height: 10),
-                          tiles[i],
-                        ],
-                      ],
-                    );
-                  }
-                  // Two-column card grid, matching the existing style.
-                  final rows = <Widget>[];
-                  for (var i = 0; i < tiles.length; i += 2) {
-                    rows.add(
-                      IntrinsicHeight(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            Expanded(child: tiles[i]),
-                            if (i + 1 < tiles.length) ...[
-                              const SizedBox(width: 12),
-                              Expanded(child: tiles[i + 1]),
-                            ] else ...[
-                              const SizedBox(width: 12),
-                              const Expanded(child: SizedBox()),
-                            ],
-                          ],
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                decoration: BoxDecoration(
+                  color: AppThemeColors.darkCanvas,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: _border),
+                ),
+                child: DropdownButtonHideUnderline(
+                  child: DropdownButton<String>(
+                    isExpanded: true,
+                    dropdownColor: AppThemeColors.darkSurface,
+                    value: _selectedUserRole?.id,
+                    hint: const Text('Select a role',
+                        style: TextStyle(color: _subtle)),
+                    icon: const Icon(Icons.keyboard_arrow_down_rounded,
+                        color: _subtle),
+                    items: [
+                      for (final role in roles)
+                        DropdownMenuItem<String>(
+                          value: role.id,
+                          enabled: !_submitting &&
+                              (!role.isManagerial || _canAssignManager),
+                          child: Text(
+                            role.name,
+                            style: const TextStyle(
+                                color: _label, fontWeight: FontWeight.w600),
+                          ),
                         ),
-                      ),
-                    );
-                  }
-                  return Column(
-                    children: [
-                      for (var i = 0; i < rows.length; i++) ...[
-                        if (i > 0) const SizedBox(height: 10),
-                        rows[i],
-                      ],
                     ],
-                  );
-                },
+                    onChanged: _submitting
+                        ? null
+                        : (id) {
+                            if (id == null) return;
+                            final match =
+                                roles.where((r) => r.id == id).firstOrNull;
+                            if (match != null) {
+                              setState(() => _selectedUserRole = match);
+                            }
+                          },
+                  ),
+                ),
               ),
-            // Managerial-role gating hint (admins only), as before.
             if (_selectedUserRole?.isManagerial ?? false)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
@@ -1147,21 +1146,6 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     );
   }
 
-  double? _parseSalary() {
-    final raw = _salaryCtrl.text.trim();
-    if (raw.isEmpty) return null;
-    return double.tryParse(raw);
-  }
-
-  String? _salaryValidator(String? value) {
-    final raw = value?.trim() ?? '';
-    if (raw.isEmpty) return null;
-    final salary = double.tryParse(raw);
-    if (salary == null) return 'Enter a valid salary';
-    if (salary < 0) return 'Salary cannot be negative';
-    return null;
-  }
-
   Widget _buildJoinDate() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1227,39 +1211,77 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                     ],
                   ),
                 )
-              : DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    isExpanded: true,
-                    dropdownColor: AppThemeColors.darkSurface,
-                    value: _selectedManagerName,
-                    hint: const Text('Select reporting manager',
-                        style: TextStyle(color: _subtle)),
-                    icon: const Icon(Icons.keyboard_arrow_down_rounded,
-                        color: _subtle),
-                    items: _managerOptions
-                        .map((m) => DropdownMenuItem<String>(
-                              value: m.name,
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(m.name,
-                                      style: const TextStyle(
-                                          color: _label,
-                                          fontWeight: FontWeight.w600)),
-                                  if (m.email.isNotEmpty)
-                                    Text(m.email,
+              : _managerOptions.isEmpty
+                  ? SizedBox(
+                      height: 48,
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          _managerError ?? 'No eligible managers found',
+                          style: TextStyle(
+                            color: _managerError != null
+                                ? Colors.orangeAccent
+                                : _subtle,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    )
+                  : DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        isDense: true,
+                        dropdownColor: AppThemeColors.darkSurface,
+                        value: _selectedManagerName,
+                        hint: const Text('Select reporting manager',
+                            style: TextStyle(color: _subtle)),
+                        icon: const Icon(Icons.keyboard_arrow_down_rounded,
+                            color: _subtle),
+                        itemHeight: 58,
+                        items: _managerOptions
+                            .map((m) => DropdownMenuItem<String>(
+                                  value: m.name,
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Text(m.name,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(
+                                              color: _label,
+                                              fontWeight: FontWeight.w600)),
+                                      Text(
+                                        <String>[
+                                          if (m.roleName != null &&
+                                              m.roleName!.isNotEmpty)
+                                            m.roleName!,
+                                          if (m.email.isNotEmpty) m.email,
+                                        ].join('  •  '),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
                                         style: const TextStyle(
-                                            color: _subtle, fontSize: 11)),
-                                ],
-                              ),
-                            ))
-                        .toList(),
-                    onChanged: _submitting
-                        ? null
-                        : (v) => setState(() => _selectedManagerName = v),
-                  ),
-                ),
+                                            color: _subtle, fontSize: 11),
+                                      ),
+                                    ],
+                                  ),
+                                ))
+                            .toList(),
+                        onChanged: _submitting
+                            ? null
+                            : (v) {
+                                final selected = _managerOptions.firstWhere(
+                                  (o) => o.name == v,
+                                  orElse: () => const _ManagerOption(name: ''),
+                                );
+                                setState(() {
+                                  _selectedManagerName = v;
+                                  _selectedManagerUserId = selected.userId;
+                                });
+                              },
+                      ),
+                    ),
         ),
       ],
     );
@@ -1546,101 +1568,13 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
 class _ManagerOption {
   final String name;
   final String email;
+  final String? roleName;
+  final String? userId;
 
-  const _ManagerOption({required this.name, required this.email});
-}
-
-class _RoleTile extends StatelessWidget {
-  final String title;
-  final String subtitle;
-  final IconData icon;
-  final bool selected;
-  final bool enabled;
-  final VoidCallback onTap;
-
-  static const _accent = Color(0xFF0F766E);
-  static const _border = AppThemeColors.darkBorder;
-  static const _label = AppThemeColors.darkText;
-  static const _subtle = AppThemeColors.darkMuted;
-
-  const _RoleTile({
-    required this.title,
-    required this.subtitle,
-    required this.icon,
-    required this.selected,
-    required this.enabled,
-    required this.onTap,
+  const _ManagerOption({
+    required this.name,
+    this.email = '',
+    this.roleName,
+    this.userId,
   });
-
-  @override
-  Widget build(BuildContext context) {
-    final activeBorder = selected ? _accent : _border;
-    final activeBg =
-        selected ? _accent.withValues(alpha: 0.16) : AppThemeColors.darkCanvas;
-    return Opacity(
-      opacity: enabled ? 1.0 : 0.55,
-      child: InkWell(
-        onTap: enabled ? onTap : null,
-        borderRadius: BorderRadius.circular(12),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(
-            color: activeBg,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: activeBorder,
-              width: selected ? 1.5 : 1,
-            ),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: selected ? _accent : AppThemeColors.darkCanvas,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Icon(
-                  icon,
-                  size: 18,
-                  color: selected ? Colors.white : _subtle,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Text(
-                          title,
-                          style: const TextStyle(
-                            color: _label,
-                            fontWeight: FontWeight.w800,
-                            fontSize: 14,
-                          ),
-                        ),
-                        if (selected) ...[
-                          const SizedBox(width: 6),
-                          const Icon(Icons.check_circle_rounded,
-                              size: 14, color: _accent),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      subtitle,
-                      style: const TextStyle(color: _subtle, fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
 }

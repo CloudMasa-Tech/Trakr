@@ -127,6 +127,30 @@ service cloud.firestore {
           && get(/databases/$(database)/documents/app_config/admin_access).data.primaryAdminEmail.lower() == request.auth.token.email.lower();
     }
 
+    // Narrow, additive exception for the bootstrap-repair case only. Firestore
+    // functions cannot see the match pattern variable, so `userId` is passed in.
+    // True ONLY when the seeded primary admin self-writes the previously-missing
+    // `roleId`/`companyId` onto their OWN users doc, to give AuthSessionProvider's
+    // _repairBootstrapAdminUsersDoc() a path out of the chicken-and-egg where the
+    // admin cannot be recognized as a Company Admin (isCompanyAdmin) until they
+    // already have a roleId. Every guard is required:
+    //   * request.auth.uid == userId   -> can repair only their own doc
+    //   * !('roleId' in resource.data) -> fires only on the broken/missing state,
+    //                                     never lets an already-provisioned user
+    //                                     change their own role
+    //   * isSeededBootstrapAdmin()     -> only the recorded primary admin matches
+    //   * roleId == 'company_admin'    -> hardcoded target, not attacker-controlled
+    // This is ADDED as an OR beside unchangedPrivileges() in the update rule, so
+    // it never weakens unchangedPrivileges() for any other update path.
+    function isBootstrapAdminSelfRepair(userId) {
+      return request.auth.uid != null
+          && request.auth.uid == userId
+          && !('roleId' in resource.data)
+          && isSeededBootstrapAdmin()
+          && 'roleId' in request.resource.data
+          && request.resource.data.roleId == 'company_admin';
+    }
+
     // True when the caller holds any of the given permission ids. Permission
     // resolution mirrors AccessControlService._getUserPermissionIds: direct
     // `permissionIds` on the caller's `users` doc are unioned with the
@@ -182,8 +206,14 @@ service cloud.firestore {
     }
 
     // ── users/{uid} ────────────────────────────────────────────────────
+    // Any signed-in tenant member may read users (each tenant is an isolated
+    // project, so this carries no cross-tenant leak) — mirroring `staff`,
+    // `roles` and `employees`. A plain `signedIn()` read is required for
+    // collection queries (e.g. "Reports to" listing) because the alternative
+    // per-doc `sameCompany()` rule denies the whole query if even one matched
+    // doc has a null/missing/mismatched `companyId`.
     match /users/{userId} {
-      allow read: if request.auth.uid != null && (request.auth.uid == userId || sameCompany());
+      allow read: if request.auth.uid != null && (request.auth.uid == userId || signedIn());
 
       allow create: if request.auth.uid != null && (
           request.auth.uid == userId
@@ -204,6 +234,7 @@ service cloud.firestore {
       ) && (
           isCompanyAdmin()
           || unchangedPrivileges()
+          || isBootstrapAdminSelfRepair(userId)
       ) && (
           !('role' in request.resource.data)
           || request.resource.data.role == null

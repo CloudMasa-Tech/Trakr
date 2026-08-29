@@ -6,7 +6,7 @@ import 'package:flutter/services.dart';
 import '../../theme/app_theme_colors.dart';
 import 'trakr_logo.dart';
 
-class Sidebar extends StatelessWidget {
+class Sidebar extends StatefulWidget {
   final int selectedIndex;
   final ValueChanged<int> onItemSelected;
   final Future<void> Function()? onLogout;
@@ -26,6 +26,71 @@ class Sidebar extends StatelessWidget {
     this.photoUrl,
   });
 
+  @override
+  State<Sidebar> createState() => _SidebarState();
+}
+
+class _SidebarState extends State<Sidebar> {
+  static const _analyticsSection = 'ANALYTICS';
+  static const _attendanceSection = 'ATTENDANCE MONITOR';
+  static const _payrollSection = 'PAYROLL';
+  static const _directorySection = 'DIRECTORY & ACCESS';
+  static const _systemSection = 'SYSTEM CONFIGURATION';
+
+  late final Set<String> _expandedSections;
+
+  @override
+  void initState() {
+    super.initState();
+    _expandedSections = {};
+    final section = _sectionForIndex(widget.selectedIndex);
+    if (section != null) _expandedSections.add(section);
+  }
+
+  @override
+  void didUpdateWidget(Sidebar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.selectedIndex != widget.selectedIndex) {
+      final section = _sectionForIndex(widget.selectedIndex);
+      if (section != null && !_expandedSections.contains(section)) {
+        _expandedSections.add(section);
+      }
+    }
+  }
+
+  static String? _sectionForIndex(int index) {
+    switch (index) {
+      case 0:
+        return _analyticsSection;
+      case 11:
+      case 12:
+      case 13:
+      case 9:
+      case 8:
+        return _attendanceSection;
+      case 4:
+        return _payrollSection;
+      case 3:
+      case 15:
+      case 16:
+        return _directorySection;
+      case 7:
+        return _systemSection;
+      default:
+        return null;
+    }
+  }
+
+  void _toggleSection(String section) {
+    setState(() {
+      if (_expandedSections.contains(section)) {
+        _expandedSections.remove(section);
+      } else {
+        _expandedSections.add(section);
+      }
+    });
+  }
+
   ImageProvider? _decodeSidebarImage(String? value) {
     final raw = value?.trim();
     if (raw == null || raw.isEmpty) return null;
@@ -44,9 +109,11 @@ class Sidebar extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
 
-    final name = adminName?.trim().isNotEmpty == true ? adminName! : 'Admin';
-    final designation = adminRole ?? 'HR Admin';
-    final avatarImage = _decodeSidebarImage(photoUrl);
+    final name = widget.adminName?.trim().isNotEmpty == true
+        ? widget.adminName!
+        : 'Admin';
+    final designation = widget.adminRole ?? 'HR Admin';
+    final avatarImage = _decodeSidebarImage(widget.photoUrl);
 
     return Container(
       width: 230,
@@ -55,7 +122,7 @@ class Sidebar extends StatelessWidget {
       child: CustomScrollView(
         slivers: [
           SliverFillRemaining(
-            hasScrollBody: false,
+            hasScrollBody: true,
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -69,12 +136,12 @@ class Sidebar extends StatelessWidget {
                   ),
                 ),
 
-                if (onProfileTap != null) ...[
+                if (widget.onProfileTap != null) ...[
                   const SizedBox(height: 14),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 14),
                     child: InkWell(
-                      onTap: onProfileTap,
+                      onTap: widget.onProfileTap,
                       borderRadius: BorderRadius.circular(16),
                       child: Container(
                         padding: const EdgeInsets.symmetric(
@@ -103,7 +170,8 @@ class Sidebar extends StatelessWidget {
                                 radius: 18,
                                 backgroundColor: colors.surface,
                                 backgroundImage: avatarImage,
-                                child: photoUrl?.trim().isNotEmpty == true
+                                child: widget.photoUrl?.trim().isNotEmpty ==
+                                        true
                                     ? null
                                     : Text(
                                         name.trim().isNotEmpty
@@ -158,100 +226,141 @@ class Sidebar extends StatelessWidget {
 
                 const SizedBox(height: 18),
 
-                // ── MAIN Section ─────────────────────────────────────────
-                _sectionLabel(context, 'MAIN'),
-                const SizedBox(height: 6),
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                // ── ANALYTICS ────────────────────────────────────────────
+                _sectionHeader(context, _analyticsSection),
+                _CollapsibleSectionGroup(
+                  expanded: _expandedSections.contains(_analyticsSection),
+                  children: [
+                    _SidebarItem(
+                        index: 0,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.grid_view_rounded,
+                        label: 'Dashboard',
+                        onTap: widget.onItemSelected),
+                  ],
+                ),
 
-                _SidebarItem(
-                    index: 0,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.grid_view_rounded,
-                    label: 'Dashboard',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 11,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.history_rounded,
-                    label: 'Attendance History',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 12,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.manage_history_rounded,
-                    label: 'Manager Log',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 13,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.analytics_outlined,
-                    label: 'Monthly Analysis',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 4,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.payments_outlined,
-                    label: 'Payroll',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 2,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.location_on_outlined,
-                    label: 'Geo-Tagging',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 10,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.calendar_month_outlined,
-                    label: 'Weekend / Holiday',
-                    onTap: onItemSelected),
+                const SizedBox(height: 14),
+                // ── ATTENDANCE MONITOR ───────────────────────────────────
+                _sectionHeader(context, _attendanceSection),
+                _CollapsibleSectionGroup(
+                  expanded: _expandedSections.contains(_attendanceSection),
+                  children: [
+                    _SidebarItem(
+                        index: 11,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.history_rounded,
+                        label: 'Attendance Monitoring',
+                        onTap: widget.onItemSelected),
+                    _SidebarItem(
+                        index: 12,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.manage_history_rounded,
+                        label: 'Manager Activity Log',
+                        onTap: widget.onItemSelected),
+                    _SidebarItem(
+                        index: 13,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.analytics_outlined,
+                        label: 'Monthly Analysis',
+                        onTap: widget.onItemSelected),
+                    _SidebarItem(
+                        index: 9,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.assignment_late_outlined,
+                        label: 'Checkout Request',
+                        onTap: widget.onItemSelected),
+                    _SidebarItem(
+                        index: 8,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.notifications_active_outlined,
+                        label: 'Manager Requests',
+                        onTap: widget.onItemSelected),
+                  ],
+                ),
 
-                _SidebarItem(
-                    index: 3,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.people_outline_rounded,
-                    label: 'Team Directory',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 15,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.admin_panel_settings_outlined,
-                    label: 'User Roles',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 16,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.work_outline_rounded,
-                    label: 'Designations',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 9,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.assignment_late_outlined,
-                    label: 'Checkout Request',
-                    onTap: onItemSelected),
-                _SidebarItem(
-                    index: 8,
-                    selectedIndex: selectedIndex,
-                    icon: Icons.notifications_active_outlined,
-                    label: 'Manager Requests',
-                    onTap: onItemSelected),
+                const SizedBox(height: 14),
+                // ── PAYROLL ──────────────────────────────────────────────
+                _sectionHeader(context, _payrollSection),
+                _CollapsibleSectionGroup(
+                  expanded: _expandedSections.contains(_payrollSection),
+                  children: [
+                    _SidebarItem(
+                        index: 4,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.payments_outlined,
+                        label: 'Payroll & Compensation',
+                        onTap: widget.onItemSelected),
+                  ],
+                ),
+
+                const SizedBox(height: 14),
+                // ── DIRECTORY & ACCESS ───────────────────────────────────
+                _sectionHeader(context, _directorySection),
+                _CollapsibleSectionGroup(
+                  expanded: _expandedSections.contains(_directorySection),
+                  children: [
+                    _SidebarItem(
+                        index: 3,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.people_outline_rounded,
+                        label: 'Employee Directory',
+                        onTap: widget.onItemSelected),
+                    _SidebarItem(
+                        index: 15,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.admin_panel_settings_outlined,
+                        label: 'Roles & Permissions',
+                        onTap: widget.onItemSelected),
+                    _SidebarItem(
+                        index: 16,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.work_outline_rounded,
+                        label: 'Designations',
+                        onTap: widget.onItemSelected),
+                  ],
+                ),
+
+                const SizedBox(height: 14),
+                // ── SYSTEM CONFIGURATION ────────────────────────────────
+                _sectionHeader(context, _systemSection),
+                _CollapsibleSectionGroup(
+                  expanded: _expandedSections.contains(_systemSection),
+                  children: [
+                    _SidebarItem(
+                        index: 7,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.settings_outlined,
+                        label: 'Settings',
+                        onTap: widget.onItemSelected),
+                  ],
+                ),
+
+                const SizedBox(height: 14),
+                // ── Notifications (top-level, no header) ─────────────────
                 _SidebarItem(
                     index: 14,
-                    selectedIndex: selectedIndex,
+                    selectedIndex: widget.selectedIndex,
                     icon: Icons.notifications_outlined,
                     label: 'Notifications',
-                    onTap: onItemSelected),
-
+                    onTap: widget.onItemSelected),
+                      ],
+                    ),
+                  ),
+                ),
                 const SizedBox(height: 20),
-
-                const Spacer(),
-                if (onLogout != null)
+                if (widget.onLogout != null)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(14, 0, 14, 12),
                     child: SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
-                        onPressed: onLogout,
+                        onPressed: widget.onLogout,
                         icon: const Icon(Icons.logout_rounded, size: 18),
                         label: const Text('Logout'),
                         style: ElevatedButton.styleFrom(
@@ -276,16 +385,69 @@ class Sidebar extends StatelessWidget {
     );
   }
 
-  Widget _sectionLabel(BuildContext context, String label) {
+  Widget _sectionHeader(BuildContext context, String label) {
     final colors = AppColors.of(context);
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 18),
-      child: Text(label,
-          style: TextStyle(
-              color: colors.textMuted,
-              fontSize: 10,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 1.4)),
+    final expanded = _expandedSections.contains(label);
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _toggleSection(label),
+        borderRadius: BorderRadius.circular(8),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 8, 16, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(label,
+                    style: TextStyle(
+                        color: colors.textMuted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: 1.4)),
+              ),
+              AnimatedRotation(
+                turns: expanded ? 0.25 : 0,
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeInOut,
+                child: Icon(
+                  Icons.chevron_right_rounded,
+                  size: 18,
+                  color: expanded ? colors.focus : colors.iconMuted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CollapsibleSectionGroup extends StatelessWidget {
+  final bool expanded;
+  final List<Widget> children;
+  const _CollapsibleSectionGroup({
+    required this.expanded,
+    required this.children,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // `AnimatedSize` animates between the expanded Column (intrinsic height)
+    // and a zero-height box when collapsed. It is safe inside the sidebar's
+    // `CustomScrollView`/`SliverFillRemaining` (unbounded height) — unlike
+    // `AnimatedCrossFade`, which produced a zero-size Stack (all-Positioned
+    // children) under loose constraints and crashed with layout assertions.
+    return AnimatedSize(
+      duration: const Duration(milliseconds: 240),
+      curve: Curves.easeInOut,
+      alignment: Alignment.topCenter,
+      child: expanded
+          ? Column(
+              mainAxisSize: MainAxisSize.min,
+              children: children,
+            )
+          : const SizedBox(width: double.infinity, height: 0),
     );
   }
 }

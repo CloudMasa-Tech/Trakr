@@ -260,13 +260,11 @@ class _AppShellState extends State<AppShell> {
   Widget _buildPage(int index) {
     switch (index) {
       case 0:
-        return const AttendanceDashboardScreen();
       case 1:
         return const AttendanceDashboardScreen();
       case 2:
-        return const GeoTagScreen();
       case 10:
-        return const WeekendHolidayScreen();
+        return const _SystemSettingsScreen();
 
       case 3:
         return const TeamDirectoryScreen();
@@ -274,7 +272,7 @@ class _AppShellState extends State<AppShell> {
         return const PayrollScreen();
 
       case 7:
-        return const _PlaceholderScreen(title: 'System Settings');
+        return const _SystemSettingsScreen();
       case 8:
         return const ManagerRequestsScreen();
       case 9:
@@ -1348,7 +1346,7 @@ class _AppShellState extends State<AppShell> {
         final moreItems = [
           {
             'index': 12,
-            'label': 'Manager Log',
+            'label': 'Manager Activity Log',
             'icon': Icons.manage_history_rounded
           },
           {
@@ -1356,11 +1354,15 @@ class _AppShellState extends State<AppShell> {
             'label': 'Monthly Analysis',
             'icon': Icons.analytics_outlined
           },
-          {'index': 4, 'label': 'Payroll', 'icon': Icons.payments_outlined},
           {
-            'index': 10,
-            'label': 'Weekend / Holiday',
-            'icon': Icons.calendar_month_outlined
+            'index': 4,
+            'label': 'Payroll & Compensation',
+            'icon': Icons.payments_outlined
+          },
+          {
+            'index': 7,
+            'label': 'Settings',
+            'icon': Icons.settings_outlined
           },
           {
             'index': 9,
@@ -1379,7 +1381,7 @@ class _AppShellState extends State<AppShell> {
           },
           {
             'index': 15,
-            'label': 'User Roles',
+            'label': 'Roles & Permissions',
             'icon': Icons.admin_panel_settings_outlined
           },
           {
@@ -1490,38 +1492,81 @@ class _AppShellState extends State<AppShell> {
   }
 }
 
-// Placeholder for screens not yet built
-class _PlaceholderScreen extends StatelessWidget {
-  final String title;
-  const _PlaceholderScreen({required this.title});
+// System Settings screen: tabs embedding geo-fencing and weekly off / holidays
+class _SystemSettingsScreen extends StatelessWidget {
+  const _SystemSettingsScreen();
 
   @override
   Widget build(BuildContext context) {
     final colors = AppColors.of(context);
 
-    return Scaffold(
-      backgroundColor: colors.background,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
+    return DefaultTabController(
+      length: 2,
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        body: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              Icons.construction_outlined,
-              color: colors.focus.withValues(alpha: 0.5),
-              size: 48,
+            Padding(
+              padding: const EdgeInsets.fromLTRB(24, 20, 24, 0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'System Settings',
+                    style: TextStyle(
+                      color: colors.textPrimary,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Geo-fencing rules and weekly off / holiday configuration',
+                    style: TextStyle(
+                      color: colors.textSecondary,
+                      fontSize: 13,
+                    ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 16),
-            Text(title,
-                style: TextStyle(
-                    color: colors.textSecondary,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w600)),
+            const SizedBox(height: 14),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 24),
+              clipBehavior: Clip.antiAlias,
+              decoration: BoxDecoration(
+                color: colors.surface,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: colors.border),
+              ),
+              child: TabBar(
+                dividerColor: Colors.transparent,
+                indicatorSize: TabBarIndicatorSize.tab,
+                indicator: BoxDecoration(
+                  color: colors.focus.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                labelColor: colors.focus,
+                unselectedLabelColor: colors.textSecondary,
+                labelStyle:
+                    const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+                unselectedLabelStyle: const TextStyle(fontSize: 13),
+                tabs: const [
+                  Tab(height: 44, text: 'Geo-Fencing'),
+                  Tab(height: 44, text: 'Weekly Off & Holidays'),
+                ],
+              ),
+            ),
             const SizedBox(height: 8),
-            Text('Coming soon',
-                style: TextStyle(
-                  color: colors.textMuted,
-                  fontSize: 14,
-                )),
+            const Expanded(
+              child: TabBarView(
+                children: [
+                  GeoTagScreen(),
+                  WeekendHolidayScreen(),
+                ],
+              ),
+            ),
           ],
         ),
       ),
