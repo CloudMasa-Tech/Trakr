@@ -1237,34 +1237,30 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                             style: TextStyle(color: _subtle)),
                         icon: const Icon(Icons.keyboard_arrow_down_rounded,
                             color: _subtle),
-                        itemHeight: 58,
+                        itemHeight: 60,
                         items: _managerOptions
                             .map((m) => DropdownMenuItem<String>(
                                   value: m.name,
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Text(m.name,
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
+                                  child: Text.rich(
+                                    TextSpan(
+                                      children: [
+                                        TextSpan(
+                                          text: m.name,
                                           style: const TextStyle(
                                               color: _label,
-                                              fontWeight: FontWeight.w600)),
-                                      Text(
-                                        <String>[
-                                          if (m.roleName != null &&
-                                              m.roleName!.isNotEmpty)
-                                            m.roleName!,
-                                          if (m.email.isNotEmpty) m.email,
-                                        ].join('  •  '),
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: const TextStyle(
-                                            color: _subtle, fontSize: 11),
-                                      ),
-                                    ],
+                                              fontWeight: FontWeight.w600),
+                                        ),
+                                        if (m.roleName != null &&
+                                            m.roleName!.isNotEmpty)
+                                          TextSpan(
+                                            text: '   ${m.roleName}',
+                                            style: const TextStyle(
+                                                color: _subtle, fontSize: 12),
+                                          ),
+                                      ],
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
                                   ),
                                 ))
                             .toList(),

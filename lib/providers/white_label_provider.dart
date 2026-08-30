@@ -31,8 +31,15 @@ class WhiteLabelProvider extends ChangeNotifier {
   /// belongs to.
   void _onActiveContextChanged() {
     final current = FirebaseContextProvider.current;
-    if (_context.app.name != current.app.name) {
+    if (_context.app.name == current.app.name) return;
+    try {
       setContext(current);
+    } catch (e, s) {
+      // A context-switch re-config failure (e.g. stale/deleted tenant app)
+      // must never break the notification that drives signIn's completion.
+      // Fall back to default theming and keep going.
+      debugPrint(
+        'White label context switch failed; using default theme. $e\n$s');
     }
   }
 
@@ -65,16 +72,31 @@ class WhiteLabelProvider extends ChangeNotifier {
 
   void listenToConfig() {
     _configSubscription?.cancel();
-    _configSubscription =
-        _service.streamConfig().listen((WhiteLabelModel model) {
-      _config = model;
-      notifyListeners();
-    }, onError: (Object error, StackTrace stackTrace) {
-      debugPrint('White label config stream error: $error');
-      // On error, reset to default to avoid showing stale branding
+    _configSubscription = null;
+    try {
+      _configSubscription = _service.streamConfig().listen(
+            (WhiteLabelModel model) {
+          _config = model;
+          notifyListeners();
+        },
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint('White label config stream error: $error');
+          // On error, reset to default to avoid showing stale branding.
+          if (_config != WhiteLabelModel.empty) {
+            _config = WhiteLabelModel.empty;
+            notifyListeners();
+          }
+        },
+      );
+    } catch (e, s) {
+      // The stream failed to START (e.g. the Firestore client is bound to a
+      // deleted app). Degrade to default theming — never let this throw
+      // through notifyListeners and hang/abort the login chain.
+      debugPrint(
+        'White label config stream failed to start; using default theme. '
+        '$e\n$s');
       _config = WhiteLabelModel.empty;
-      notifyListeners();
-    });
+    }
   }
 
   Future<void> updateConfig(WhiteLabelModel model) async {

@@ -142,6 +142,19 @@ class FirebaseManager {
     required String workspaceId,
     FirebaseOptions? options,
   }) async {
+    // A tracked wrapper can outlive its platform app (failed dispose, direct
+    // out-of-band delete(), hot-restart churn). Never reuse a wrapper the SDK
+    // no longer lists — every downstream Auth/Firestore call would throw
+    // app/app-deleted. Drop it now so the branches below build a fresh app.
+    final previouslyCached = _apps[workspaceId];
+    if (previouslyCached != null && !_isAppLive(previouslyCached)) {
+      debugPrint(
+        'FirebaseManager.initializeTenantApp: tracked app "$workspaceId" is '
+        'no longer registered with the Firebase SDK (deleted out-of-band) — '
+        'dropping the stale wrapper; a fresh app instance will be created.',
+      );
+      _apps.remove(workspaceId);
+    }
     if (options == null) {
       // No config was requested — reuse any app already bound to the workspace.
       final cached = _apps[workspaceId];
@@ -224,6 +237,21 @@ class FirebaseManager {
     return _initialize(workspaceId: workspaceId, options: options);
   }
 
+  /// Whether [app] is still registered with the Firebase SDK.
+  ///
+  /// An app whose `delete()` completed (or was triggered out-of-band) is
+  /// removed from `Firebase.apps` while its Dart wrapper can survive in
+  /// `_apps`. Reusing that stale wrapper makes every Auth/Firestore call throw
+  /// `firebase_core/app-deleted`. Reuse is only safe while the registry still
+  /// lists an app under the same name.
+  static bool _isAppLive(FirebaseApp app) {
+    try {
+      return Firebase.apps.any((candidate) => candidate.name == app.name);
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Whether [a] and [b] describe the same Firebase project + app. These three
   /// fields are the project identity; every other option (authDomain, storage
   /// bucket, measurement id, …) follows from them.
@@ -291,7 +319,18 @@ class FirebaseManager {
     if (id == null) return defaultApp;
 
     final cached = _apps[id];
-    if (cached != null) return cached;
+    if (cached != null) {
+      if (!_isAppLive(cached)) {
+        debugPrint(
+          'FirebaseManager.getTenantApp: cached app "$id" is no longer '
+          'registered with the Firebase SDK (deleted out-of-band) — dropping '
+          'stale wrapper.',
+        );
+        _apps.remove(id);
+      } else {
+        return cached;
+      }
+    }
 
     final existing = Firebase.apps.where((app) => app.name == id);
     if (existing.isNotEmpty) {

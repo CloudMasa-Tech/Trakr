@@ -7,7 +7,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import '../firebase_options.dart';
-import 'package:http/http.dart' as http;
 import '../firebase/firebase_context.dart';
 
 class _NotificationDisplay {
@@ -68,12 +67,6 @@ class NotificationService {
   static const String actionReject = 'reject';
   static const String actionView = 'view';
   static const String brand = 'TЯAKR';
-  static const String _vercelNotificationUrl =
-      'https://trakr-six.vercel.app/api/sendNotification';
-  static const String _vercelNotificationActionUrl =
-      'https://trakr-six.vercel.app/api/notificationAction';
-  static const String _vercelBroadcastUrl =
-      'https://trakr-six.vercel.app/api/broadcastNotification';
 
   static Future<void> showBackgroundNotification(RemoteMessage message) async {
     if (kIsWeb || message.notification != null) return;
@@ -684,14 +677,8 @@ class NotificationService {
   static Future<void> _sendNotificationActionToVercel(
     Map<String, dynamic> payload,
   ) async {
-    final response = await http.post(
-      Uri.parse(_vercelNotificationActionUrl),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode(payload),
-    );
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw Exception('Vercel notification action failed: ${response.body}');
-    }
+    // Legacy Vercel notification-action endpoint is no longer deployed. No-op
+    // so action handling doesn't make a failing network request.
   }
 
   /// Trigger a push notification via the Vercel serverless backend
@@ -720,61 +707,11 @@ class NotificationService {
     required String body,
     Map<String, dynamic>? data,
   }) async {
-    final isAttendanceNotification = _isAttendanceNotification(data);
-    final cleanBody = isAttendanceNotification
-        ? cleanNotificationText(body)
-        : cleanNotificationDynamicText(body);
-    final cleanTitle = isAttendanceNotification
-        ? cleanNotificationTitle(title, cleanBody)
-        : cleanNotificationDynamicTitle(title);
-    final notificationTag = _notificationTag(data);
-    final payloadData = data == null
-        ? null
-        : {
-            ...data,
-            if (notificationTag.isNotEmpty) 'notificationTag': notificationTag,
-            if (!isAttendanceNotification) ...{
-              'notificationFormat': data['notificationFormat'] ?? 'dynamic',
-              'notificationTitle': cleanNotificationDynamicTitle(
-                data['notificationTitle']?.toString() ?? cleanTitle,
-              ),
-              'notificationBody': cleanNotificationDynamicText(
-                data['notificationBody']?.toString() ?? cleanBody,
-              ),
-            },
-          };
-
-    try {
-      final response = await http.post(
-        Uri.parse(_vercelNotificationUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          if (phone?.trim().isNotEmpty == true) 'phone': phone!.trim(),
-          if (identifier?.trim().isNotEmpty == true)
-            'identifier': identifier!.trim(),
-          if (role?.trim().isNotEmpty == true) 'role': role!.trim(),
-          'title': cleanTitle,
-          'body': cleanBody,
-          if (payloadData != null) 'data': _jsonSafeMap(payloadData),
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        debugPrint(
-            'Successfully triggered push notification to Vercel backend.');
-        return true;
-      } else {
-        // Push is a best-effort secondary channel (email is primary). Log
-        // quietly and never surface the backend body or interrupt the caller.
-        debugPrint(
-            'Push notification not sent (HTTP ${response.statusCode}). '
-            'Continuing silently — email is the primary channel.');
-        return false;
-      }
-    } catch (e) {
-      debugPrint('Push notification skipped (best-effort): $e');
-      return false;
-    }
+    // Push notifications are delivered by the legacy Vercel backend, which is
+    // no longer deployed (it returns HTTP 500 on every call). Email is the
+    // primary channel, so this secondary push path is disabled to avoid the
+    // failing network requests. Re-enable once a working push endpoint exists.
+    return false;
   }
 
   /// Trigger a platform-wide broadcast push via the Vercel serverless backend
@@ -783,30 +720,10 @@ class NotificationService {
     required String body,
     String recipient = 'admin',
   }) async {
-    try {
-      final response = await http.post(
-        Uri.parse(_vercelBroadcastUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'title': title,
-          'body': body,
-          'recipient': recipient,
-        }),
-      );
-
-      if (response.statusCode == 200) {
-        debugPrint('Successfully triggered broadcast push to Vercel backend.');
-        return true;
-      } else {
-        debugPrint(
-            'Broadcast push not sent (HTTP ${response.statusCode}). '
-            'Continuing silently.');
-        return false;
-      }
-    } catch (e) {
-      debugPrint('Error calling Vercel backend for broadcast: $e');
-      return false;
-    }
+    // Legacy Vercel broadcast endpoint is no longer deployed (returns HTTP
+    // 500). Kept as a no-op so callers keep working until a replacement push
+    // backend exists.
+    return false;
   }
 
   /// Find a user's phone number by UID, email, name, or employeeId in the admins, managers, and staff collections,
@@ -988,67 +905,6 @@ class NotificationService {
 
   String _phoneDedupeKey(String phone) {
     return phone.trim().replaceAll(RegExp(r'[^0-9+]'), '');
-  }
-
-  bool _isAttendanceNotification(Map<String, dynamic>? data) {
-    final action = data?['attendanceAction']?.toString().trim();
-    return action != null && action.isNotEmpty;
-  }
-
-  String _notificationTag(Map<String, dynamic>? data) {
-    if (data == null) return '';
-
-    final explicitTag = data['notificationTag']?.toString().trim();
-    if (explicitTag != null && explicitTag.isNotEmpty) return explicitTag;
-
-    final requestId = data['requestId']?.toString().trim();
-    if (requestId != null && requestId.isNotEmpty) {
-      final collection = data['requestCollection']?.toString().trim();
-      return collection != null && collection.isNotEmpty
-          ? '${collection}_$requestId'
-          : requestId;
-    }
-
-    final attendanceAction = data['attendanceAction']?.toString().trim();
-    final employeeId = data['employeeId']?.toString().trim();
-    final dateKey = data['dateKey']?.toString().trim();
-    if (attendanceAction != null &&
-        attendanceAction.isNotEmpty &&
-        employeeId != null &&
-        employeeId.isNotEmpty &&
-        dateKey != null &&
-        dateKey.isNotEmpty) {
-      return 'attendance_${attendanceAction}_${employeeId}_$dateKey';
-    }
-
-    return '';
-  }
-
-  Map<String, dynamic> _jsonSafeMap(Map<String, dynamic> data) {
-    return data.map((key, value) => MapEntry(key, _jsonSafeValue(value)));
-  }
-
-  dynamic _jsonSafeValue(dynamic value) {
-    if (value == null ||
-        value is String ||
-        value is num ||
-        value is bool ||
-        value is List) {
-      return value;
-    }
-    if (value is Timestamp) {
-      return value.toDate().toUtc().toIso8601String();
-    }
-    if (value is DateTime) {
-      return value.toUtc().toIso8601String();
-    }
-    if (value is Map) {
-      return value.map(
-        (key, nestedValue) =>
-            MapEntry(key.toString(), _jsonSafeValue(nestedValue)),
-      );
-    }
-    return value.toString();
   }
 
   Future<void> _recordNotification({

@@ -92,3 +92,44 @@ export async function getMasterAccessToken(): Promise<string> {
   
   return accessToken;
 }
+
+/**
+ * Resolves/creates an Admin SDK app scoped to a TENANT project, using the
+ * master service account as the credential but overriding `projectId` so every
+ * Admin call targets the tenant's own Firebase project.
+ *
+ * The master service account must hold the appropriate IAM role on the tenant
+ * project for the operation being performed (auth updates/delete for
+ * `roles/firebaseauth.admin`, Firestore admin for `roles/datastore.*`, etc.).
+ *
+ * Apps are cached per project id so repeated invocations reuse the same
+ * instance (firebase-admin forbids duplicate app names).
+ */
+export function getTenantAdminApp(projectId: string): admin.app.App {
+  const name = `tenant-adminsdk-${projectId}`;
+  try {
+    return admin.app(name);
+  } catch {
+    // App not initialized yet — create it below.
+  }
+
+  const saJson = process.env.SERVICE_ACCOUNT_JSON;
+  if (!saJson) {
+    throw new Error(
+      'SERVICE_ACCOUNT_JSON secret not found. ' +
+      'Run: firebase functions:secrets:set SERVICE_ACCOUNT_JSON'
+    );
+  }
+
+  let serviceAccount: admin.ServiceAccount;
+  try {
+    serviceAccount = JSON.parse(saJson);
+  } catch (e) {
+    throw new Error(`Invalid SERVICE_ACCOUNT_JSON: ${e instanceof Error ? e.message : 'not valid JSON'}`);
+  }
+
+  return admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    projectId,
+  }, name);
+}

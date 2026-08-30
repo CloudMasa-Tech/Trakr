@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../../firebase/firebase_context_provider.dart';
 import '../../theme/app_theme_colors.dart';
@@ -43,7 +42,7 @@ class AppTopBar extends StatelessWidget {
             children: [
               AppGradientText(
                 title,
-                style: GoogleFonts.inter(
+                style: const TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.bold,
                 ),
@@ -52,7 +51,7 @@ class AppTopBar extends StatelessWidget {
               ),
               Text(
                 subtitle,
-                style: GoogleFonts.inter(
+                style: TextStyle(
                   color: colors.textSecondary,
                   fontSize: 13,
                 ),
@@ -69,7 +68,7 @@ class AppTopBar extends StatelessWidget {
             backgroundColor: colors.primaryContainer,
             child: Text(
               _getInitials(),
-              style: GoogleFonts.inter(
+              style: TextStyle(
                 color: colors.primary,
                 fontWeight: FontWeight.bold,
                 fontSize: 12,

@@ -23,6 +23,28 @@ Options -MultiViews
   AddType font/woff2 .woff2
 </IfModule>
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Output compression (gzip / Brotli)
+#
+# The Flutter web bundle ships a single large `main.dart.js` (several MB) that
+# is downloaded on every cold visit because the generated service worker simply
+# unregisters itself (no asset cache). Without compression the browser must
+# transfer the full, uncompressed JS every time, which is the dominant cost on
+# the landing/login page load. These rules gzip/Brotli the text-y payloads
+# (JS, WASM, CSS, JSON) so `main.dart.js` drops from ~5.9 MB to ~1.7 MB on the
+# wire. Each block is guarded so an absent module is ignored, never fatal.
+# ─────────────────────────────────────────────────────────────────────────────
+<IfModule mod_brotli.c>
+  AddOutputFilterByType BROTLI_COMPRESS text/html text/plain text/css application/javascript application/x-javascript application/json application/manifest+json application/wasm application/vnd.ms-fontobject application/xml text/xml application/xml+rss image/svg+xml
+</IfModule>
+
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/plain text/css application/javascript application/x-javascript application/json application/manifest+json application/wasm application/vnd.ms-fontobject application/xml text/xml application/xml+rss image/svg+xml
+  # Vary: Accept-Encoding lets caches store both compressed and uncompressed
+  # variants of a resource, so gzip/Brotli clients always get the right one.
+  Header append Vary Accept-Encoding
+</IfModule>
+
 <IfModule mod_rewrite.c>
   RewriteEngine On
   RewriteBase /
@@ -60,7 +82,7 @@ ErrorDocument 404 /index.html
   <FilesMatch "\.(js|wasm|png|jpg|jpeg|svg|ico|ttf|otf|woff|woff2)$">
     Header always set Cache-Control "public, max-age=31536000, immutable"
   </FilesMatch>
-  <FilesMatch "^(index\.html|flutter_bootstrap\.js|manifest\.json|hosting_check\.html)$">
+  <FilesMatch "^(index\.html|flutter_bootstrap\.js|manifest\.json|hosting_check\.html|main\.dart\.js)$">
     Header always set Cache-Control "no-cache, max-age=0, must-revalidate"
   </FilesMatch>
 </IfModule>

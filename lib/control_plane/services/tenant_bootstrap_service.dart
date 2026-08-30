@@ -68,6 +68,15 @@ class TenantBootstrapService {
 
   /// Disposes the tenant [FirebaseApp] and forgets the cached workspace, so the
   /// app returns to the workspace-code entry flow.
+  ///
+  /// IMPORTANT: disposing a tenant app makes its name-keyed Firestore instance
+  /// permanently unusable (cloud_firestore caches instances by app *name* and
+  /// never evicts them, so recreating a same-named app returns the OLD,
+  /// terminated client — "[cloud_firestore/failed-precondition] The client has
+  /// already been terminated"). Only call this when the workspace/app is being
+  /// genuinely torn down (e.g. deleting a workspace). For a normal logout use
+  /// [forgetLastWorkspace] instead, which keeps the app alive and reusable so
+  /// the Firestore/Auth instances stay valid for the next login.
   Future<void> clearLastWorkspace() async {
     final workspace = _lastWorkspace ?? await _readCachedWorkspace();
     if (workspace != null) {
@@ -78,6 +87,22 @@ class TenantBootstrapService {
         // best-effort. The cache is cleared regardless.
       }
     }
+    _lastWorkspace = null;
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_cacheIdKey);
+    await prefs.remove(_cacheJsonKey);
+  }
+
+  /// Forgets the cached workspace WITHOUT disposing the tenant [FirebaseApp].
+  ///
+  /// This is the correct teardown for a normal sign-out: the app (and its
+  /// Auth/Firestore instances) remain alive and are reused on the next login.
+  /// Because the tenant app is never deleted and re-created under the SAME
+  /// name, the cloud_firestore name-keyed instance cache stays valid and the
+  /// next login never sees "[cloud_firestore/failed-precondition] The client
+  /// has already been terminated".
+  Future<void> forgetLastWorkspace() async {
     _lastWorkspace = null;
 
     final prefs = await SharedPreferences.getInstance();

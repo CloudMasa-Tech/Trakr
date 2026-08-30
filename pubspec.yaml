@@ -48,7 +48,6 @@ dependencies:
   permission_handler: ^11.3.1
 
   # UI
-  google_fonts: ^6.2.1
   cached_network_image: ^3.3.1
 
   cupertino_icons: ^1.0.6

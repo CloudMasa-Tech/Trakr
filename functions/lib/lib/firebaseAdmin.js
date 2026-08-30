@@ -46,6 +46,7 @@ exports.serviceAccountJson = void 0;
 exports.initializeMasterAdmin = initializeMasterAdmin;
 exports.getMasterAdmin = getMasterAdmin;
 exports.getMasterAccessToken = getMasterAccessToken;
+exports.getTenantAdminApp = getTenantAdminApp;
 const admin = __importStar(require("firebase-admin"));
 const params_1 = require("firebase-functions/params");
 // Define the secret parameter - this tells Firebase CLI to inject the secret
@@ -117,5 +118,42 @@ async function getMasterAccessToken() {
         throw new Error('Failed to get access token from master service account');
     }
     return accessToken;
+}
+/**
+ * Resolves/creates an Admin SDK app scoped to a TENANT project, using the
+ * master service account as the credential but overriding `projectId` so every
+ * Admin call targets the tenant's own Firebase project.
+ *
+ * The master service account must hold the appropriate IAM role on the tenant
+ * project for the operation being performed (auth updates/delete for
+ * `roles/firebaseauth.admin`, Firestore admin for `roles/datastore.*`, etc.).
+ *
+ * Apps are cached per project id so repeated invocations reuse the same
+ * instance (firebase-admin forbids duplicate app names).
+ */
+function getTenantAdminApp(projectId) {
+    const name = `tenant-adminsdk-${projectId}`;
+    try {
+        return admin.app(name);
+    }
+    catch {
+        // App not initialized yet — create it below.
+    }
+    const saJson = process.env.SERVICE_ACCOUNT_JSON;
+    if (!saJson) {
+        throw new Error('SERVICE_ACCOUNT_JSON secret not found. ' +
+            'Run: firebase functions:secrets:set SERVICE_ACCOUNT_JSON');
+    }
+    let serviceAccount;
+    try {
+        serviceAccount = JSON.parse(saJson);
+    }
+    catch (e) {
+        throw new Error(`Invalid SERVICE_ACCOUNT_JSON: ${e instanceof Error ? e.message : 'not valid JSON'}`);
+    }
+    return admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount),
+        projectId,
+    }, name);
 }
 //# sourceMappingURL=firebaseAdmin.js.map

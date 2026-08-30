@@ -1,7 +1,6 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:attendqr/theme/app_theme_colors.dart';
@@ -113,13 +112,14 @@ class _LandingPageState extends State<LandingPage>
     return Theme(
       data: baseTheme.copyWith(
         scaffoldBackgroundColor: _bg,
-        textTheme: GoogleFonts.interTextTheme(baseTheme.textTheme).apply(
+        textTheme: baseTheme.textTheme.apply(
+          fontFamily: 'Poppins',
           bodyColor: _text,
           displayColor: _text,
         ),
       ),
       child: DefaultTextStyle.merge(
-        style: GoogleFonts.inter(),
+        style: const TextStyle(fontFamily: 'Poppins'),
         child: Scaffold(
           backgroundColor: _bg,
           body: Stack(

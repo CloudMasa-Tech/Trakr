@@ -6,6 +6,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../control_plane/models/workspace.dart';
+import '../control_plane/control_plane_firebase.dart';
 import '../control_plane/services/login_workspace_resolver_service.dart';
 import '../control_plane/services/super_admin_config_service.dart';
 import '../control_plane/services/tenant_bootstrap_service.dart';
@@ -92,9 +93,17 @@ class AuthSessionProvider extends ChangeNotifier {
   StreamSubscription<User?>? _authSub;
   Timer? _roleRetryTimer;
   Timer? _authRestoreTimer;
+  Timer? _signInWatchdog;
   int _authRestoreAttempts = 0;
   int _authChangeVersion = 0;
   Completer<void>? _pendingAuthCompleter;
+
+  /// Monotonic counter of every RAW emission delivered by the
+  /// `idTokenChanges`/`authStateChanges` stream subscription. This log is the
+  /// ground truth for diagnosing "the stream never re-fires": if the counter
+  /// does not advance after a successful `signInWithEmailAndPassword`, the
+  /// stream itself delivered nothing (upstream of every guard/completer fix).
+  static int _rawEmissionCounter = 0;
 
   /// Uid whose role resolution is currently in flight. Used to dedupe the
   /// duplicate auth-state events (the constructor's direct call plus the
@@ -112,8 +121,12 @@ class AuthSessionProvider extends ChangeNotifier {
     debugPrint('[AuthSessionProvider] constructor called');
     setContext(context ?? FirebaseContextProvider.current, isInitial: true);
     // Resolve the platform Super Admin email from the Master config doc (with
-    // a dart-define fallback) before any role/guard logic runs.
-    unawaited(SuperAdminConfig.ensureLoaded(_firestore));
+    // a dart-define fallback) before any role/guard logic runs. This is ALWAYS
+    // read from the Master control-plane project — never the active/tenant
+    // context, which also has an `app_config/admin_access` doc whose
+    // `primaryAdminEmail` is that tenant's company admin.
+    unawaited(SuperAdminConfig.ensureLoaded(
+        ControlPlaneFirebase.instance.firestore));
     final currentUser = _auth.currentUser;
     if (currentUser != null) {
       debugPrint(
@@ -177,6 +190,7 @@ class AuthSessionProvider extends ChangeNotifier {
     _authSub?.cancel();
     _roleRetryTimer?.cancel();
     _authRestoreTimer?.cancel();
+    _signInWatchdog?.cancel();
     _pendingAuthCompleter = null;
     super.dispose();
   }
@@ -191,6 +205,20 @@ class AuthSessionProvider extends ChangeNotifier {
     _authSub?.cancel();
     _roleRetryTimer?.cancel();
     _authRestoreTimer?.cancel();
+    _signInWatchdog?.cancel();
+
+    // Reset ALL auth-session state so a context switch (login, logout, or
+    // tenant hand-off) can never inherit a stale in-flight resolution guard,
+    // a dangling pending completer, or a version counter from a previous cycle.
+    // Without this, a second login (first login -> logout -> login again)
+    // could hit the `_resolvingUid == uid` duplicate guard with a stale lock
+    // and strand the waiting signIn() completer for 30s.
+    _resolvingUid = null;
+    _authChangeVersion = 0;
+    _pendingAuthCompleter = null;
+    _roleRetryTimer = null;
+    _authRestoreTimer = null;
+    _authRestoreAttempts = 0;
 
     // Reset state
     _user = null;
@@ -199,7 +227,7 @@ class AuthSessionProvider extends ChangeNotifier {
     _errorMessage = null;
 
     // Re-initialize listeners against the new context.
-    _authSub = _auth.idTokenChanges().listen(_handleAuthChanged);
+    _authSub = _auth.idTokenChanges().listen(_handleStreamEmission);
     if (!isInitial) notifyListeners();
   }
 
@@ -262,7 +290,29 @@ class AuthSessionProvider extends ChangeNotifier {
     }
   }
 
+  /// RAW stream subscription callback. Logs EVERY emission the underlying
+  /// auth stream delivers — before any guard, dedupe, or resolution logic —
+  /// so a missing emission is unmistakable in the logs. Only stream emissions
+  /// bump the counter; direct/manual calls to `_handleAuthChanged` (restore,
+  /// retry, watchdog) do not.
+  Future<void> _handleStreamEmission(User? user) {
+    _rawEmissionCounter++;
+    debugPrint(
+        '[AuthSessionProvider.RAW idTokenChanges] emission #$_rawEmissionCounter '
+        'user=${user?.email ?? '(null)'} uid=${user?.uid ?? '(none)'} '
+        'app=${_context.app.name}');
+    return _handleAuthChanged(user);
+  }
+
   Future<void> _handleAuthChanged(User? user) async {
+    // UNCONDITIONAL first-line log: if the sign-in flow times out, this line
+    // proves whether the auth-state/ID-token listener invoked us at all. If it
+    // never prints, the listener is not delivering events for this app instance
+    // (or this event never fired) — the timeout is upstream of role resolution.
+    debugPrint(
+        '[AuthSessionProvider._handleAuthChanged] INVOKED user=${user?.email ?? '(null)'} '
+        'uid=${user?.uid ?? '(none)'} app=${_context.app.name} '
+        'auth.currentUser=${_auth.currentUser?.email ?? '(none)'}');
     _user = user;
 
     if (user == null) {
@@ -308,13 +358,45 @@ class AuthSessionProvider extends ChangeNotifier {
     }
 
     // A resolution for this uid is already in flight (constructor call +
-    // listener fired back-to-back). Let the in-flight resolution finish and
-    // settle the state; do NOT complete the pending completer here because the
-    // in-flight call still owns it.
+    // listener fired back-to-back, or a previous sign-in attempt is still
+    // resolving). The in-flight call settles the state and owns the completer.
+    // We must NOT complete the pending completer here (the role may not be set
+    // yet), but we must ALSO not strand a NEW signIn() that is waiting on it:
+    // a fresh sign-in installs a brand-new completer that the in-flight call
+    // may already have raced past. So, once the in-flight lock is expected to
+    // clear, re-run resolution for this uid so the waiting signIn() gets its
+    // completer completed.
     if (_resolvingUid == user.uid) {
       debugPrint(
           '[AuthSessionProvider._handleAuthChanged] resolution already in '
           'flight for uid=${user.uid}, skipping duplicate');
+      final pending = _pendingAuthCompleter;
+      if (pending != null && !pending.isCompleted && _role == null) {
+        debugPrint(
+            '[AuthSessionProvider._handleAuthChanged] a signIn() completer is '
+            'waiting but resolution is in flight — scheduling a re-check to '
+            'make sure it completes');
+        unawaited(Future<void>.delayed(const Duration(milliseconds: 200), () async {
+          // Only proceed if still unresolved for this exact session and no
+          // other resolution has taken the lock.
+          if (_role == null &&
+              _resolvingUid == user.uid &&
+              _auth.currentUser?.uid == user.uid) {
+            _clearResolvingUid(user.uid);
+            await _handleAuthChanged(user);
+          } else if (_role != null) {
+            // A newer resolution finished in the meantime and role is known:
+            // completing the waiting completer is now safe.
+            _resolvePendingAuth();
+          } else {
+            debugPrint(
+                '[AuthSessionProvider._handleAuthChanged] re-check skipped: '
+                'role still unresolved but this event is no longer current — '
+                'leaving the completer for the active resolution (or the '
+                'signIn 30s timeout) to settle');
+          }
+        }));
+      }
       return;
     }
     _resolvingUid = user.uid;
@@ -323,8 +405,13 @@ class AuthSessionProvider extends ChangeNotifier {
     final authChangeVersion = ++_authChangeVersion;
 
     // Make sure the platform Super Admin email is resolved (from the Master
-    // app_config doc) before any role guard runs against it.
-    await SuperAdminConfig.ensureLoaded(_firestore);
+    // app_config doc) before any role guard runs against it. Source it from the
+    // Master control-plane project ONLY — `_firestore` here can be the tenant
+    // project during/after a tenant session, and reading that project's
+    // `app_config/admin_access` would misclassify its company admin as the
+    // platform Super Admin.
+    await SuperAdminConfig.ensureLoaded(
+        ControlPlaneFirebase.instance.firestore);
 
     _authRestoreTimer?.cancel();
     final locallyCachedRole = await _loadLocallyCachedRole(user.uid);
@@ -363,8 +450,9 @@ class AuthSessionProvider extends ChangeNotifier {
           '[AuthSessionProvider._handleAuthChanged] _loadRole returned: ${role?.value}');
       if (!_isCurrentAuthChange(authChangeVersion, user)) {
         debugPrint(
-            '[AuthSessionProvider._handleAuthChanged] stale auth change, discarding');
-        _resolvePendingAuth();
+            '[AuthSessionProvider._handleAuthChanged] stale auth change '
+            '(role resolved), discarding — a newer resolution owns the '
+            'pending completer');
         return;
       }
 
@@ -373,7 +461,10 @@ class AuthSessionProvider extends ChangeNotifier {
             '[AuthSessionProvider._handleAuthChanged] role is null, trying cache');
         final cachedRole = await _loadCachedRole(user.uid);
         if (!_isCurrentAuthChange(authChangeVersion, user)) {
-          _resolvePendingAuth();
+          debugPrint(
+              '[AuthSessionProvider._handleAuthChanged] stale auth change '
+              '(cache path), discarding — a newer resolution owns the '
+              'pending completer');
           return;
         }
 
@@ -416,7 +507,10 @@ class AuthSessionProvider extends ChangeNotifier {
       debugPrint('[AuthSessionProvider._handleAuthChanged] error: $e');
       final cachedRole = await _loadCachedRole(user.uid);
       if (!_isCurrentAuthChange(authChangeVersion, user)) {
-        _resolvePendingAuth();
+        debugPrint(
+            '[AuthSessionProvider._handleAuthChanged] stale auth change '
+            '(error path), discarding — a newer resolution owns the '
+            'pending completer');
         return;
       }
 
@@ -610,38 +704,108 @@ class AuthSessionProvider extends ChangeNotifier {
     return role;
   }
 
+  /// Number of times to re-read the role source (users doc / directory) with a
+  /// forced ID-token refresh in between, to ride out custom-claims or document
+  /// propagation latency right after an account is created/invited.
+  static const int _roleReadMaxAttempts = 3;
+  static const List<Duration> _roleReadBackoff = [
+    Duration(milliseconds: 500),
+    Duration(seconds: 1),
+  ];
+
   Future<AppUserRole?> _loadRole(String uid) async {
     debugPrint('[AuthSessionProvider._loadRole] uid=$uid');
-    DocumentSnapshot<Map<String, dynamic>> doc;
-    try {
-      doc = await _firestore.collection('users').doc(uid).get().timeout(
-        const Duration(seconds: 10),
-        onTimeout: () {
-          debugPrint('[AuthSessionProvider._loadRole] TIMEOUT reading users doc');
-          throw Exception('Connection timeout');
-        },
-      );
-    } on FirebaseException catch (e) {
-      debugPrint(
-          '[AuthSessionProvider._loadRole] Firestore error reading users/$uid: '
-          'code=${e.code}, message=${e.message}');
-      if (e.code == 'permission-denied') {
+
+    User? user;
+    Map<String, dynamic>? data;
+    bool docExists = false;
+    Exception? lastError;
+    for (var attempt = 1; attempt <= _roleReadMaxAttempts; attempt++) {
+      if (attempt > 1) {
         debugPrint(
-            '[AuthSessionProvider._loadRole] PERMISSION_DENIED — Firestore rules '
-            'may deny read access to users/$uid. Check tenant Firestore rules '
-            'deployment.');
+            '[AuthSessionProvider._loadRole] attempt $attempt/$_roleReadMaxAttempts '
+            '(backoff ${_roleReadBackoff[attempt - 2].inMilliseconds}ms + '
+            'forced token refresh)');
+        // Force a fresh ID token so any custom claims (tenant id, role) that a
+        // Cloud Function just finished setting are picked up, and so the
+        // Firestore rules always evaluate against the newest claims. This
+        // guarantees a newly invited user eventually sees their provisioned
+        // doc/role instead of a stale or not-yet-propagated snapshot.
+        try {
+          final current = _auth.currentUser;
+          if (current != null) {
+            await current.getIdToken(true);
+            debugPrint(
+                '[AuthSessionProvider._loadRole] forced token refresh done');
+          }
+        } catch (e) {
+          debugPrint(
+              '[AuthSessionProvider._loadRole] forced token refresh failed '
+              '(non-fatal): $e');
+        }
+        await Future<void>.delayed(_roleReadBackoff[attempt - 2]);
       }
-      rethrow;
+
+      try {
+        final snapshot = await _firestore
+            .collection('users')
+            .doc(uid)
+            .get()
+            .timeout(
+              const Duration(seconds: 10),
+              onTimeout: () {
+                debugPrint(
+                    '[AuthSessionProvider._loadRole] TIMEOUT reading users doc '
+                    '(attempt $attempt)');
+                throw TimeoutException('Role resolution timed out reading users doc');
+              },
+            );
+        user = _auth.currentUser;
+        data = snapshot.data();
+        docExists = snapshot.exists;
+        if (attempt < _roleReadMaxAttempts &&
+            user != null &&
+            AppUserRoleX.fromValue(data?['role'] as String?) == null &&
+            data != null) {
+          // The doc exists but the role isn't readable/interpretable yet — it
+          // may have just been written by an invite that is still propagating,
+          // or the caller's token predates the write. Retry rather than bailing.
+          debugPrint(
+              '[AuthSessionProvider._loadRole] role not yet resolvable '
+              '(doc exists=${snapshot.exists}, data=$data), will retry');
+          continue;
+        }
+      } on FirebaseException catch (e) {
+        lastError = e;
+        debugPrint(
+            '[AuthSessionProvider._loadRole] Firestore error reading users/$uid '
+            '(attempt $attempt): code=${e.code}, message=${e.message}');
+        if (e.code == 'permission-denied') {
+          debugPrint(
+              '[AuthSessionProvider._loadRole] PERMISSION_DENIED — Firestore '
+              'rules may deny read access to users/$uid. Check tenant Firestore '
+              'rules deployment.');
+        }
+        if (attempt < _roleReadMaxAttempts) continue;
+        rethrow;
+      } on TimeoutException {
+        lastError = TimeoutException('Role resolution timed out reading users doc');
+        if (attempt < _roleReadMaxAttempts) continue;
+        debugPrint(
+            '[AuthSessionProvider._loadRole] TIMEOUT exhausted after '
+            '$_roleReadMaxAttempts attempts');
+        throw lastError;
+      }
+      break;
     }
-    final data = doc.data();
-    final user = _auth.currentUser;
+
     if (user == null) {
       debugPrint('[AuthSessionProvider._loadRole] currentUser is null');
       return null;
     }
 
     debugPrint(
-        '[AuthSessionProvider._loadRole] user doc exists=${doc.exists}, data=$data');
+        '[AuthSessionProvider._loadRole] user doc exists=$docExists, data=$data');
 
     final storedRole = _guardSuperAdminActive(
       AppUserRoleX.fromValue(data?['role'] as String?),
@@ -869,6 +1033,7 @@ Future<void> signIn({
       final resolution =
           await LoginWorkspaceResolverService.instance.resolve(normalizedEmail);
 
+      bool authenticatedOnTenant = false;
       if (resolution.isSuperAdmin) {
         debugPrint('[AuthSessionProvider.signIn] super admin -> master auth');
         _workspace = null;
@@ -881,6 +1046,7 @@ Future<void> signIn({
         final tenantContext =
             await TenantBootstrapService.instance.bootstrap(workspace);
         setContext(tenantContext);
+        authenticatedOnTenant = true;
       } else if (resolution.isUnavailable) {
         debugPrint('[AuthSessionProvider.signIn] workspace unavailable: '
             '${resolution.message}');
@@ -894,6 +1060,30 @@ Future<void> signIn({
             '[AuthSessionProvider.signIn] email not in index -> master auth');
         _workspace = null;
         await _ensureMasterContext();
+      }
+
+      // A REUSED tenant app can still hold the previous JS/auth session for
+      // THIS same uid — e.g. an earlier login attempt that completed at the
+      // SDK level but then failed/timed out before role resolution. On web,
+      // signing the SAME uid back in without an intervening sign-out is not a
+      // state change, so firebase-auth may not re-emit onAuthStateChanged /
+      // onIdTokenChanged and the stream subscription would never wake. Force a
+      // real SDK-level sign-out first so the upcoming auth call is a genuine
+      // null -> user transition (which always emits).
+      if (authenticatedOnTenant) {
+        try {
+          final previous = _auth.currentUser;
+          if (previous != null) {
+            debugPrint(
+                '[AuthSessionProvider.signIn] clearing previous tenant auth '
+                'session (${previous.email}) before re-auth on reused app');
+            await _auth.signOut();
+          }
+        } catch (e) {
+          debugPrint(
+              '[AuthSessionProvider.signIn] pre-auth tenant signOut failed '
+              '(non-fatal): $e');
+        }
       }
 
       // Set the completer BEFORE authenticating so a synchronous auth-stream
@@ -913,6 +1103,25 @@ Future<void> signIn({
         throw Exception('Sign-in did not return a user.');
       }
 
+      // (4b) Manual-resolution fallback. If the raw auth stream NEVER emits an
+      // event for this sign-in (the repeat-login-on-reused-app symptom), drive
+      // resolution directly from `_auth.currentUser` after a short grace period
+      // instead of hanging the full 30s on the completer. `_handleAuthChanged`
+      // is idempotent (its `_resolvingUid` guard dedupes), so this is safe even
+      // when a stream event is merely late.
+      _signInWatchdog?.cancel();
+      _signInWatchdog = Timer(const Duration(milliseconds: 2500), () {
+        final current = _auth.currentUser;
+        if (_role == null && current != null && current.uid == user.uid) {
+          debugPrint(
+              '[AuthSessionProvider.signIn] no auth-stream emission within '
+              '2.5s of successful sign-in (uid=${user.uid}, raw counter='
+              '$_rawEmissionCounter) — driving manual resolution from '
+              '_auth.currentUser');
+          unawaited(_handleAuthChanged(current));
+        }
+      });
+
       debugPrint(
           '[AuthSessionProvider.signIn] Firebase auth success, waiting for _handleAuthChanged');
       if (pendingAuth != null && !pendingAuth.isCompleted) {
@@ -925,6 +1134,7 @@ Future<void> signIn({
           },
         );
       }
+      _signInWatchdog?.cancel();
 
       debugPrint(
           '[AuthSessionProvider.signIn] _handleAuthChanged completed, role=${_role?.value}');
@@ -973,6 +1183,7 @@ Future<void> signIn({
       debugPrint(
           '[AuthSessionProvider.signIn] FirebaseAuthException: ${e.code}');
       _pendingAuthCompleter = null;
+      _resolvingUid = null;
       _setLoading(false);
       unawaited(PlatformService().recordSecurityEvent(
         type: 'failed_login',
@@ -983,6 +1194,7 @@ Future<void> signIn({
     } catch (e) {
       debugPrint('[AuthSessionProvider.signIn] unexpected error: $e');
       _pendingAuthCompleter = null;
+      _resolvingUid = null;
       _setLoading(false);
       rethrow;
     } finally {
@@ -1029,6 +1241,23 @@ Future<void> signIn({
       // there is nothing left to wait for.
       _pendingAuthCompleter = Completer<void>();
       final pendingAuth = _pendingAuthCompleter;
+
+      // Manual-resolution fallback (same rationale as signIn): if the raw auth
+      // stream never emits for this sign-in, drive resolution from
+      // `_auth.currentUser` after a short grace period instead of hanging 30s.
+      _signInWatchdog?.cancel();
+      _signInWatchdog = Timer(const Duration(milliseconds: 2500), () {
+        final current = _auth.currentUser;
+        if (_role == null && current != null) {
+          debugPrint(
+              '[AuthSessionProvider.signInWithGoogle] no auth-stream emission '
+              'within 2.5s of successful sign-in (raw counter='
+              '$_rawEmissionCounter) — driving manual resolution from '
+              '_auth.currentUser');
+          unawaited(_handleAuthChanged(current));
+        }
+      });
+
       if (_role == null && pendingAuth != null && !pendingAuth.isCompleted) {
         await pendingAuth.future.timeout(
           const Duration(seconds: 30),
@@ -1039,6 +1268,7 @@ Future<void> signIn({
           },
         );
       }
+      _signInWatchdog?.cancel();
 
       debugPrint(
           '[AuthSessionProvider.signInWithGoogle] _handleAuthChanged completed, role=${_role?.value}');
@@ -1105,11 +1335,13 @@ Future<void> signIn({
       debugPrint(
           '[AuthSessionProvider.signInWithGoogle] FirebaseAuthException: ${e.code}');
       _pendingAuthCompleter = null;
+      _resolvingUid = null;
       _setLoading(false);
       throw Exception(_friendlyMessage(e));
     } catch (e) {
       debugPrint('[AuthSessionProvider.signInWithGoogle] error: $e');
       _pendingAuthCompleter = null;
+      _resolvingUid = null;
       _setLoading(false);
       if (e is Exception) rethrow;
       throw Exception('Google sign-in failed. Please try again.');
@@ -1411,16 +1643,35 @@ Future<void> signIn({
     debugPrint('[AuthSessionProvider.signOut] called');
     _setLoading(true);
     final uid = _auth.currentUser?.uid;
+
+    // Explicitly release any in-flight resolution guard and dangling completer
+    // from THIS session so the next sign-in (login -> logout -> login again)
+    // cannot inherit a stale `_resolvingUid` lock or wait on a completer that
+    // a previous cycle failed to complete.
+    _resolvingUid = null;
+    _pendingAuthCompleter = null;
+    _roleRetryTimer?.cancel();
+    _signInWatchdog?.cancel();
+
     await _auth.signOut();
     await _googleSignIn?.signOut();
     await _clearActiveSession(uid);
     _role = null;
     _workspace = null;
     // Return to the Master control-plane project first so all tenant
-    // subscriptions are cancelled, then tear the tenant app down and forget
-    // the cached workspace. The next login resolves from a clean slate.
+    // subscriptions (auth, white label, company, dashboard) are cancelled and
+    // re-bound to the Master context.
     await _ensureMasterContext();
-    await TenantBootstrapService.instance.clearLastWorkspace();
+
+    // Forget the cached workspace but KEEP the tenant FirebaseApp alive. The
+    // cloud_firestore plugin caches Firestore instances by app NAME (never
+    // evicted), so deleting and later re-creating a same-named tenant app hands
+    // back the old terminated client -> "[cloud_firestore/failed-precondition]
+    // The client has already been terminated" on the next login. Keeping the app
+    // alive and reusing it on the next login preserves a valid Firestore/Auth
+    // instance and sidesteps that failure entirely.
+    await TenantBootstrapService.instance.forgetLastWorkspace();
+
     _setLoading(false);
     debugPrint('[AuthSessionProvider.signOut] complete');
   }

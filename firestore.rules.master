@@ -141,10 +141,12 @@ service cloud.firestore {
     }
 
     // ================================================================
-    // WHITE-LABEL SETTINGS — signed-in users may read, Super Admin may write
+    // WHITE-LABEL SETTINGS — platform default branding. Readable WITHOUT auth:
+    // the WhiteLabelProvider streams this at app launch, before any user signs in.
+    // Write: Super Admin only.
     // ================================================================
     match /settings/white_label {
-      allow read: if signedIn();
+      allow read: if true;
       allow write: if isSuperAdmin();
     }
 

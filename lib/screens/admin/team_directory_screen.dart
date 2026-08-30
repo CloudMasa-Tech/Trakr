@@ -17,7 +17,6 @@ import '../../firebase/firebase_context_provider.dart';
 import '../../models/manager_model.dart';
 import '../../models/staff.dart';
 import '../../providers/auth_session_provider.dart';
-import '../../services/attendance_service.dart';
 import '../../services/email_service.dart';
 import '../../services/manager_account_service.dart';
 import '../../services/staff_service.dart';
@@ -624,12 +623,26 @@ class _TeamDirectoryScreenState extends State<TeamDirectoryScreen> {
       'Delete Employee',
       'Remove "${staff.name}" from the employee list? This cannot be undone.',
     );
-    if (ok == true) {
-      await AttendanceService().clearProfileIdentityFromLogs(
-        employeeId: staff.employeeId,
-        employeeName: staff.name,
-      );
+    if (ok != true) return;
+    if (!mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
       await _staffService.deleteStaff(staff.id);
+      messenger.showSnackBar(
+        const SnackBar(
+          backgroundColor: _TeamAdminTheme.green400,
+          content: Text('Employee removed from the directory.'),
+        ),
+      );
+    } catch (e) {
+      final message = e.toString().replaceFirst('Exception: ', '');
+      messenger.showSnackBar(
+        SnackBar(
+          backgroundColor: _TeamAdminTheme.danger,
+          content: Text('Could not delete employee: $message'),
+        ),
+      );
     }
   }
 
@@ -638,12 +651,28 @@ class _TeamDirectoryScreenState extends State<TeamDirectoryScreen> {
       'Delete Manager',
       'Remove "${manager.name}" from the managers list? This cannot be undone.',
     );
-    if (ok == true) {
-      await AttendanceService().clearProfileIdentityFromLogs(
-        employeeId: manager.employeeId,
-        employeeName: manager.name,
+    if (ok != true) return;
+    if (!mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      // Delete the directory record first; role/auth cleanup flows through the
+      // service exactly like the employee path (best-effort on log cleanup).
+      await _staffService.deleteManager(manager);
+      messenger.showSnackBar(
+        const SnackBar(
+          backgroundColor: _TeamAdminTheme.green400,
+          content: Text('Manager removed from the directory.'),
+        ),
       );
-      await _db.collection('managers').doc(manager.id).delete();
+    } catch (e) {
+      final message = e.toString().replaceFirst('Exception: ', '');
+      messenger.showSnackBar(
+        SnackBar(
+          backgroundColor: _TeamAdminTheme.danger,
+          content: Text('Could not delete manager: $message'),
+        ),
+      );
     }
   }
 
@@ -2296,17 +2325,23 @@ class _ManagerRow extends StatelessWidget {
             ),
           ),
           Expanded(
-            flex: 1,
+            flex: 2,
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(
+                      width: 30, height: 34),
                   icon: const Icon(Icons.edit_outlined,
                       color: _TeamAdminTheme.primary, size: 18),
                   onPressed: onEdit,
                   tooltip: 'Edit',
                 ),
                 IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints.tightFor(
+                      width: 30, height: 34),
                   icon: const Icon(Icons.delete_outline,
                       color: _TeamAdminTheme.danger, size: 18),
                   onPressed: onDelete,

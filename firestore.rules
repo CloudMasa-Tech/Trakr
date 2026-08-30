@@ -335,7 +335,14 @@ service cloud.firestore {
 
     // ── Attendance ────────────────────────────────────────────────────
     match /attendance/{document=**} {
-      allow read: if sameCompany();
+      // Reads are permitted for any signed-in tenant member. This collection
+      // is scoped to the tenant's single company (each tenant project is one
+      // isolated company), so `sameCompany()` is redundant here — and requiring
+      // it forces every read query to be constrained by `companyId`, which most
+      // dashboard queries are not, causing `[cloud_firestore/permission-denied]`
+      // on the attendance today-stats stream. `signedIn()` matches
+      // `attendance_alerts` / `attendance_logs` below.
+      allow read: if signedIn();
       allow create: if sameCompanyOnCreate();
       allow update: if sameCompany();
       allow delete: if sameCompany();

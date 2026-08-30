@@ -12,4 +12,6 @@ export { deployTenantRules } from './deployTenantRules';
 export { setSuperAdminClaim } from './setSuperAdminClaim';
 export { createTenantProject } from './createTenantProject';
 export { deleteWorkspace } from './deleteWorkspace';
+export { deleteTenantUser } from './deleteTenantUser';
+export { registerTenantMember } from './registerTenantMember';
 export { auditOrphanedTenantProjects } from './auditOrphanedTenantProjects';

@@ -112,6 +112,23 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
     return 'Staff';
   }
 
+  /// The signed-in user on the ACTIVE Firebase context (tenant, not master).
+  ///
+  /// During a tenant session the employee is authenticated against the tenant
+  /// project's own `FirebaseAuth` instance, which is exposed via
+  /// `FirebaseContextProvider.current.auth`. Using the raw `FirebaseAuth.instance`
+  /// singleton here would resolve to the default (master control-plane) project,
+  /// which has no signed-in user, so every screen would appear logged-out. This
+  /// getter is the single source of truth for the current employee.
+  User? get _activeUser => FirebaseContextProvider.current.auth.currentUser;
+
+  /// Firestore instance bound to the ACTIVE Firebase context (tenant, not
+  /// master). Mirrors [_activeUser]: during a tenant session the raw
+  /// `FirebaseFirestore.instance` singleton resolves to the default
+  /// (master control-plane) project, not the tenant's isolated project, so
+  /// reads/writes here would hit the wrong database (and usually be denied).
+  FirebaseFirestore get _activeDb => FirebaseContextProvider.current.firestore;
+
   String _checkInStartRule = '08:30 AM';
   String _checkOutEndRule = '07:30 PM';
 
@@ -144,7 +161,7 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
   }
 
   Future<void> _initializeAttendanceStreams() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _activeUser;
     final staff = await _loadCurrentStaff();
     final employeeId = staff?.employeeId ?? user?.uid;
 
@@ -218,7 +235,7 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
         staff.id,
         staff.employeeId,
         staff.email,
-        FirebaseAuth.instance.currentUser?.uid ?? '',
+        _activeUser?.uid ?? '',
       },
     );
 
@@ -272,7 +289,7 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
   }
 
   Future<Staff?> _loadCurrentStaff() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _activeUser;
     if (user == null) return null;
 
     return _attendanceService.getStaffByUserIdentity(
@@ -310,18 +327,19 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
 
   Future<void> _saveStaffPhotoUrl(String photoUrl) async {
     final staff = _currentStaff;
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _activeUser;
     if (staff == null) return;
 
-    final batch = FirebaseFirestore.instance.batch();
+    final db = _activeDb;
+    final batch = db.batch();
     batch.update(
-      FirebaseFirestore.instance.collection('staff').doc(staff.id),
+      db.collection('staff').doc(staff.id),
       {'photoUrl': photoUrl, 'updatedAt': FieldValue.serverTimestamp()},
     );
 
     if (user != null) {
       batch.set(
-        FirebaseFirestore.instance.collection('users').doc(user.uid),
+        db.collection('users').doc(user.uid),
         {'photoUrl': photoUrl, 'updatedAt': FieldValue.serverTimestamp()},
         SetOptions(merge: true),
       );
@@ -417,7 +435,7 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _activeUser;
     final staffName =
         user?.displayName ?? user?.email?.split('@').first ?? 'Staff';
     final staffDisplayName = _currentStaff?.name.isNotEmpty == true
@@ -430,7 +448,7 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
         final showSidebar = constraints.maxWidth >= 980;
         final navLabelSize = constraints.maxWidth < 380 ? 10.0 : 11.0;
         final employeeId =
-            _currentStaff?.employeeId ?? FirebaseAuth.instance.currentUser?.uid;
+            _currentStaff?.employeeId ?? _activeUser?.uid;
         final pageBody = _buildPageBody(staffName, employeeId);
 
         if (showSidebar) {
@@ -1166,7 +1184,7 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
 
   Widget _buildPermissionHistory(String userId) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
+      stream: _activeDb
           .collection('permission_requests')
           .snapshots(),
       builder: (context, snapshot) {
@@ -1410,7 +1428,7 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
 
     setState(() => _isSubmittingPermission = true);
     try {
-      final user = FirebaseAuth.instance.currentUser;
+      final user = _activeUser;
       if (user == null) throw Exception('User not signed in.');
 
       // Use staff's Firestore employeeId (NOT Firebase Auth UID).
@@ -1576,7 +1594,7 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
 
     setState(() => _isSubmittingLeave = true);
     try {
-      final user = FirebaseAuth.instance.currentUser;
+      final user = _activeUser;
       if (user == null) throw Exception('User not signed in.');
 
       final effectiveUserId = _currentStaff?.id ?? userId;
@@ -1621,11 +1639,11 @@ class _EmployeeHomeScreenState extends State<EmployeeHomeScreen> {
       builder: (context) {
         final staff = _currentStaff;
         final name = staff?.name ??
-            FirebaseAuth.instance.currentUser?.displayName ??
+            _activeUser?.displayName ??
             'Staff';
         final designation = _staffDesignation;
         final email =
-            staff?.email ?? FirebaseAuth.instance.currentUser?.email ?? 'N/A';
+            staff?.email ?? _activeUser?.email ?? 'N/A';
         final joinDateStr = staff != null
             ? DateFormat('dd MMM yyyy').format(staff.joinDate)
             : 'N/A';
@@ -2031,13 +2049,13 @@ class _StaffNotificationsPanel extends StatelessWidget {
               leaveService.getRequestsForUser(effectiveEmployeeId, limit: 30),
           builder: (context, leaveSnapshot) {
             return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream: FirebaseFirestore.instance
+              stream: FirebaseContextProvider.current.firestore
                   .collection('checkout_requests')
                   .where('employeeId', isEqualTo: effectiveEmployeeId)
                   .snapshots(),
               builder: (context, checkoutSnapshot) {
                 return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: FirebaseFirestore.instance
+                  stream: FirebaseContextProvider.current.firestore
                       .collection('permission_requests')
                       .snapshots(),
                   builder: (context, permissionSnapshot) {
@@ -2208,7 +2226,7 @@ class _StaffNotificationsPanel extends StatelessWidget {
       if (staff?.email.trim().isNotEmpty == true) staff!.email.trim(),
     }.take(10).toList();
 
-    return FirebaseFirestore.instance
+    return FirebaseContextProvider.current.firestore
         .collection('notifications')
         .where('recipient', whereIn: identities)
         .snapshots();

@@ -27,4 +27,17 @@ export declare function getMasterAdmin(): admin.app.App;
  * on tenant projects where the service account has been granted IAM roles.
  */
 export declare function getMasterAccessToken(): Promise<string>;
+/**
+ * Resolves/creates an Admin SDK app scoped to a TENANT project, using the
+ * master service account as the credential but overriding `projectId` so every
+ * Admin call targets the tenant's own Firebase project.
+ *
+ * The master service account must hold the appropriate IAM role on the tenant
+ * project for the operation being performed (auth updates/delete for
+ * `roles/firebaseauth.admin`, Firestore admin for `roles/datastore.*`, etc.).
+ *
+ * Apps are cached per project id so repeated invocations reuse the same
+ * instance (firebase-admin forbids duplicate app names).
+ */
+export declare function getTenantAdminApp(projectId: string): admin.app.App;
 //# sourceMappingURL=firebaseAdmin.d.ts.map

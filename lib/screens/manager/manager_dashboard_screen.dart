@@ -123,6 +123,16 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
   bool _isUploadingProfilePhoto = false;
   bool _anniversaryGreetingChecked = false;
 
+  /// The signed-in user on the ACTIVE Firebase context (tenant, not master).
+  ///
+  /// During a tenant session the manager is authenticated against the tenant
+  /// project's own `FirebaseAuth` instance, exposed via
+  /// `FirebaseContextProvider.current.auth`. The raw `FirebaseAuth.instance`
+  /// singleton resolves to the default (master control-plane) project, which
+  /// has no signed-in user, so every screen would appear logged-out. This
+  /// getter is the single source of truth for the current manager.
+  User? get _activeUser => FirebaseContextProvider.current.auth.currentUser;
+
   // Fields for Manager's own leave & permission applications
   final TextEditingController _managerLeaveReasonController =
       TextEditingController();
@@ -189,7 +199,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
   }
 
   Future<void> _resolveManagerContext() async {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _activeUser;
     final fallbackIdentifier = user?.email?.trim().isNotEmpty == true
         ? user!.email!.trim()
         : user?.uid ?? user?.displayName ?? 'Manager';
@@ -211,7 +221,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       Map<String, dynamic>? resolvedDocData;
 
       if (_managerDocId?.trim().isNotEmpty == true) {
-        final docSnap = await FirebaseFirestore.instance
+        final docSnap = await FirebaseContextProvider.current.firestore
             .collection('managers')
             .doc(_managerDocId!.trim())
             .get();
@@ -222,7 +232,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       }
 
       if (resolvedDocData == null && user?.email != null) {
-        final querySnap = await FirebaseFirestore.instance
+        final querySnap = await FirebaseContextProvider.current.firestore
             .collection('managers')
             .where('email', isEqualTo: user!.email!.trim().toLowerCase())
             .limit(1)
@@ -363,7 +373,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
   Future<void> _pickAndUploadManagerPhoto() async {
     if (_isUploadingProfilePhoto) return;
 
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _activeUser;
     if (user == null) return;
 
     try {
@@ -391,20 +401,20 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
   }
 
   Future<void> _saveManagerPhotoUrl(String photoUrl) async {
-    final user = FirebaseAuth.instance.currentUser;
-    final batch = FirebaseFirestore.instance.batch();
+    final user = _activeUser;
+    final db = FirebaseContextProvider.current.firestore;
+    final batch = db.batch();
     var hasWrite = false;
 
     if (user != null) {
       batch.set(
-        FirebaseFirestore.instance.collection('users').doc(user.uid),
+        db.collection('users').doc(user.uid),
         {'photoUrl': photoUrl, 'updatedAt': FieldValue.serverTimestamp()},
         SetOptions(merge: true),
       );
       hasWrite = true;
 
-      final managerByUid =
-          FirebaseFirestore.instance.collection('managers').doc(user.uid);
+      final managerByUid = db.collection('managers').doc(user.uid);
       final managerByUidSnap = await managerByUid.get();
       if (managerByUidSnap.exists) {
         batch.update(managerByUid, {'photoUrl': photoUrl});
@@ -413,9 +423,8 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
     }
 
     if (_managerDocId?.trim().isNotEmpty == true) {
-      final managerByDocId = FirebaseFirestore.instance
-          .collection('managers')
-          .doc(_managerDocId!.trim());
+      final managerByDocId =
+          db.collection('managers').doc(_managerDocId!.trim());
       final managerByDocIdSnap = await managerByDocId.get();
       if (managerByDocIdSnap.exists) {
         batch.update(managerByDocId, {'photoUrl': photoUrl});
@@ -432,7 +441,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
     };
 
     for (final identifier in identifiers) {
-      final managers = await FirebaseFirestore.instance
+      final managers = await db
           .collection('managers')
           .where('employeeId', isEqualTo: identifier)
           .get();
@@ -441,7 +450,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
         hasWrite = true;
       }
 
-      final managersByEmail = await FirebaseFirestore.instance
+      final managersByEmail = await db
           .collection('managers')
           .where('email', isEqualTo: identifier)
           .get();
@@ -450,7 +459,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
         hasWrite = true;
       }
 
-      final staff = await FirebaseFirestore.instance
+      final staff = await db
           .collection('staff')
           .where('employeeId', isEqualTo: identifier)
           .get();
@@ -532,7 +541,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
     });
 
     final name = _managerDisplayName.trim();
-    final email = FirebaseAuth.instance.currentUser?.email?.trim() ?? '';
+    final email = _activeUser?.email?.trim() ?? '';
     List<String> identifiers = [name];
     if (email.isNotEmpty && email != name) {
       identifiers.add(email);
@@ -608,7 +617,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
   }
 
   List<String> _managerNotificationIdentities() {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _activeUser;
     return [
       _managerDisplayName,
       _attendanceManagerScope,
@@ -818,7 +827,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       case 5:
         return ManagerTeamMembersScreen(
           managerName: _managerDisplayName,
-          managerEmail: FirebaseAuth.instance.currentUser?.email ?? '',
+          managerEmail: _activeUser?.email ?? '',
         );
       case 6:
         return const StaffScanQRScreen(autoStart: true);
@@ -2122,7 +2131,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
   // ─── MANAGER OWN REQUESTS UI AND LOGIC ──────────────────────────────────────
 
   Widget _buildOwnLeaveAndPermissionPage() {
-    final user = FirebaseAuth.instance.currentUser;
+    final user = _activeUser;
     final userId = user?.uid;
     if (userId == null) {
       return const Center(
@@ -3426,10 +3435,11 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       barrierDismissible: true,
       builder: (context) {
         final doc = _managerDocData;
+        final activeUser = _activeUser;
         final name = doc?['name']?.toString() ?? _managerDisplayName;
         final designation = _managerDesignation;
         final email = doc?['email']?.toString() ??
-            FirebaseAuth.instance.currentUser?.email ??
+            activeUser?.email ??
             'N/A';
 
         String joinDateStr = 'N/A';
@@ -3439,10 +3449,9 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
         } else if (doc?['createdAt'] is Timestamp) {
           joinDateStr = DateFormat('dd MMM yyyy')
               .format((doc!['createdAt'] as Timestamp).toDate());
-        } else if (FirebaseAuth.instance.currentUser?.metadata.creationTime !=
-            null) {
-          joinDateStr = DateFormat('dd MMM yyyy').format(
-              FirebaseAuth.instance.currentUser!.metadata.creationTime!);
+        } else if (activeUser?.metadata.creationTime != null) {
+          joinDateStr = DateFormat('dd MMM yyyy')
+              .format(activeUser!.metadata.creationTime!);
         }
         final detailItems = <_ProfileDetailItem>[
           _ProfileDetailItem(Icons.email_outlined, 'Email Address', email),
@@ -6762,7 +6771,7 @@ class _ManagerPermissionActivityText extends StatelessWidget {
         record.date.year, record.date.month, record.date.day, 23, 59, 59);
 
     return FutureBuilder<QuerySnapshot>(
-      future: FirebaseFirestore.instance
+      future: FirebaseContextProvider.current.firestore
           .collection('permission_requests')
           .where('employeeId', isEqualTo: record.employeeId)
           .where('status', isEqualTo: 'approved')
@@ -6931,7 +6940,7 @@ class _ManagerNotificationsPanel extends StatelessWidget {
       if (managerEmail?.trim().isNotEmpty == true) managerEmail!.trim(),
     }.where((value) => value.trim().isNotEmpty).take(10).toList();
 
-    return FirebaseFirestore.instance
+    return FirebaseContextProvider.current.firestore
         .collection('notifications')
         .where('recipient', whereIn: identities)
         .snapshots();

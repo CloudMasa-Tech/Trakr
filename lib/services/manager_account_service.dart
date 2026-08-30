@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -48,6 +46,14 @@ class ManagerAccountService {
     try {
       final normalizedEmail = email.trim().toLowerCase();
 
+      // Company-scoping field. Fall back to the tenant app name (== workspace
+      // id, the same convention addStaff uses) so manager docs are never left
+      // without a companyId — those are required by tenant security rules once
+      // the manager is signed in.
+      final resolvedCompanyId = (companyId != null && companyId.trim().isNotEmpty)
+          ? companyId.trim()
+          : _context.app.name;
+
       final existingManager = await _firestore
           .collection('managers')
           .where('email', isEqualTo: normalizedEmail)
@@ -56,6 +62,17 @@ class ManagerAccountService {
       if (existingManager.docs.isNotEmpty) {
         throw Exception('A manager with this email already exists');
       }
+
+      // Register the Master login index BEFORE creating anything (awaited; see
+      // staff_service.addStaff). Managers always receive a login account, so
+      // the index entry is mandatory — a failure must not produce a manager
+      // who cannot log in.
+      await TenantIdentityRepository.registerFromTenantContext(
+        context: _context,
+        email: normalizedEmail,
+        role: TenantIdentityRole.user,
+        name: name.trim(),
+      );
 
       secondaryApp = await Firebase.initializeApp(
         name: 'ManagerCreation_${DateTime.now().millisecondsSinceEpoch}',
@@ -93,7 +110,7 @@ class ManagerAccountService {
         'nationality': nationality,
         'dob': dob != null ? Timestamp.fromDate(dob) : null,
         'address': address,
-        'companyId': companyId,
+        'companyId': resolvedCompanyId,
         'roleName': roleName,
         'roleLevel': roleLevel,
         'reportsToUserId': reportsToUserId,
@@ -111,19 +128,10 @@ class ManagerAccountService {
         'roleLevel': roleLevel,
         'reportsToUserId': reportsToUserId,
         'managerId': managerRef.id,
-        'companyId': companyId,
+        'companyId': resolvedCompanyId,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
-
-      // Register the login identity so the manager can sign in with their
-      // email without entering a workspace code (best-effort).
-      unawaited(TenantIdentityRepository.registerFromTenantContext(
-        context: _context,
-        email: normalizedEmail,
-        role: TenantIdentityRole.user,
-        name: name.trim(),
-      ));
 
       return managerRef.id;
     } catch (e) {

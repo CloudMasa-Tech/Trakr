@@ -1,7 +1,9 @@
+import 'dart:convert';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:http/http.dart' as http;
 
 import '../../firebase/firebase_context.dart';
-import '../../firebase/firebase_manager.dart';
 import '../control_plane_firebase.dart';
 import '../models/tenant_identity.dart';
 
@@ -66,32 +68,69 @@ class TenantIdentityRepository {
     }
   }
 
-  /// Best-effort registration of a tenant member in the Master login index.
+  /// Registers a tenant member in the Master login index BY CALLING the
+  /// master-project `registerTenantMember` Cloud Function. The tenant client
+  /// cannot write the index directly — Master Firestore rules only allow
+  /// `isSuperAdmin()` to write `tenant_users`, and the tenant caller is not
+  /// signed in to the Master project.
   ///
-  /// Called right after a Company Admin creates an employee/manager account in
-  /// a tenant (data plane) project. When [context] is bound to the default
-  /// (Master) project there is no tenant, so this is a no-op. Failures never
-  /// propagate: the index is a redirection hint, not a gate — the real account
-  /// and credential check live in the tenant project.
+  /// AWAITED and non-swallowing: a failure throws, so invite/onboarding can
+  /// never report success while the member would still be unable to log in.
+  /// No-op when [context] is itself the Master (control-plane) project.
   static Future<void> registerFromTenantContext({
     required FirebaseContext context,
     required String email,
     required TenantIdentityRole role,
     String? name,
   }) async {
-    try {
-      if (context.app.name == FirebaseManager.instance.defaultApp.name) return;
-      final workspaceId = context.app.name;
-      if (workspaceId.isEmpty) return;
-      await TenantIdentityRepository().upsert(
-        email: email,
-        workspaceId: workspaceId,
-        role: role,
-        name: name,
+    final tenantProjectId = context.app.options.projectId.trim();
+    final masterProjectId =
+        ControlPlaneFirebase.instance.context.app.options.projectId.trim();
+    if (tenantProjectId.isEmpty ||
+        masterProjectId.isEmpty ||
+        tenantProjectId == masterProjectId) {
+      return;
+    }
+
+    final currentUser = context.auth.currentUser;
+    if (currentUser == null) {
+      throw StateError(
+          'Cannot register login identity: no signed-in user on the tenant '
+          'project.');
+    }
+    final idToken = (await currentUser.getIdToken(true)) ?? '';
+    if (idToken.isEmpty) {
+      throw StateError(
+          'Cannot register login identity: failed to refresh ID token.');
+    }
+
+    final url = Uri.parse(
+      'https://us-central1-$masterProjectId'
+      '.cloudfunctions.net/registerTenantMember',
+    );
+    final response = await http
+        .post(
+          url,
+          headers: <String, String>{
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer $idToken',
+          },
+          body: jsonEncode(<String, dynamic>{
+            'data': <String, dynamic>{
+              'projectId': tenantProjectId,
+              'email': email.trim().toLowerCase(),
+              'role': role.name,
+              if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
+            },
+          }),
+        )
+        .timeout(const Duration(seconds: 60));
+
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw StateError(
+        'Failed to register login identity (HTTP ${response.statusCode}): '
+        '${response.body}',
       );
-    } catch (_) {
-      // Best-effort by design; account creation must not fail because the
-      // control-plane index write was rejected.
     }
   }
 }
