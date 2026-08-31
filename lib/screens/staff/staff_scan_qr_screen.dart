@@ -864,7 +864,39 @@ class _StaffScanQRScreenState extends State<StaffScanQRScreen>
       return true;
     }
 
+    // On web, permission_handler_html's `_toPermissionStatus` maps the
+    // Permissions API's `'prompt'` (Ask/undecided) state AND unknown states to
+    // `PermissionStatus.denied`, and `'denied'` to `permanentlyDenied`
+    // (permission_handler_html web_delegate.dart). So a `.status` query cannot
+    // be trusted as "is it really blocked" — and on some targets (e.g. Android
+    // Chrome) it can report `permanentlyDenied` for a camera that is actually
+    // requestable. Pre-checking it would short-circuit to the blocked UI before
+    // Chrome's native prompt (triggered by getUserMedia) ever appears.
+    //
+    // Instead, treat `Permission.camera.request()` (which on web calls
+    // getUserMedia and drives the real allow/block prompt) as the sole
+    // authority: only a request that resolves to a denied/permanentlyDenied
+    // status — i.e. a real getUserMedia failure such as NotAllowedError — is a
+    // genuine block. Undecided ("Ask") falls through and triggers the prompt.
+    // ---- DIAGNOSTIC LOGGING (temporary) -------------------------------------
+    // Log the RAW permission_handler result (every enum value, not just
+    // booleans) so we can see exactly what permission_handler reports when all
+    // OS/browser settings look fine yet the app still resolves to blocked.
+    debugPrint(
+      '[CameraPerm] kIsWeb=$kIsWeb, forceEmbedded=$forceEmbedded, '
+      'canUseGoogle=$_canUseGoogleCodeScanner',
+    );
     final cameraStatus = await Permission.camera.request();
+    debugPrint(
+      '[CameraPerm] Permission.camera.request() raw: status=$cameraStatus '
+      '(name=${cameraStatus.name}), '
+      'isGranted=${cameraStatus.isGranted}, '
+      'isDenied=${cameraStatus.isDenied}, '
+      'isPermanentlyDenied=${cameraStatus.isPermanentlyDenied}, '
+      'isRestricted=${cameraStatus.isRestricted}, '
+      'isLimited=${cameraStatus.isLimited}, '
+      'isProvisional=${cameraStatus.isProvisional}',
+    );
     if (cameraStatus.isDenied) {
       setState(() {
         _cameraPermissionGranted = false;

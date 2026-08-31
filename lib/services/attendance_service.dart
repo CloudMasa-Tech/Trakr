@@ -1802,6 +1802,49 @@ class AttendanceService {
             .toList());
   }
 
+  /// Company-wide checkout requests restricted to a manager's reporting line.
+  ///
+  /// Mirrors the manager-scoping used for leave/permission: subscribe to the
+  /// manager's team (staff whose `reportsTo` matches the manager), then filter
+  /// the full `checkout_requests` collection client-side to only those whose
+  /// `employeeId` belongs to the team. This is additive — the existing
+  /// [getCheckoutRequestsStream] is untouched.
+  Stream<List<CheckoutRequest>> getCheckoutRequestsForManager(
+      String managerName) {
+    final controller = StreamController<List<CheckoutRequest>>.broadcast();
+    StreamSubscription? teamSub;
+    StreamSubscription? requestSub;
+
+    void cleanup() {
+      teamSub?.cancel();
+      requestSub?.cancel();
+    }
+
+    teamSub = _teamEmployeeIdsStream(managerName).listen((teamIds) {
+      requestSub?.cancel();
+      final normalizedTeam = teamIds.map(_normalizeIdentity).toSet();
+      requestSub = _db
+          .collection('checkout_requests')
+          .orderBy('createdAt', descending: true)
+          .snapshots()
+          .map((snap) => snap.docs
+              .map((doc) => CheckoutRequest.fromFirestore(doc))
+              .where((req) =>
+                  normalizedTeam.contains(_normalizeIdentity(req.employeeId)))
+              .toList())
+          .listen((requests) {
+        if (!controller.isClosed) controller.add(requests);
+      }, onError: (err) {
+        if (!controller.isClosed) controller.addError(err);
+      });
+    }, onError: (err) {
+      if (!controller.isClosed) controller.addError(err);
+    });
+
+    controller.onCancel = cleanup;
+    return controller.stream.asBroadcastStream();
+  }
+
   Future<void> approveCheckoutRequest(
     CheckoutRequest request, {
     required String adminNote,

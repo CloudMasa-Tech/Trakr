@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
@@ -44,8 +46,17 @@ class WorkspaceRepository {
 
   /// Reads a single workspace by its stable id.
   Future<Workspace?> getById(String workspaceId) async {
-    final doc =
-        await _firestore.collection(_collectionName).doc(workspaceId).get();
+    final doc = await _firestore
+        .collection(_collectionName)
+        .doc(workspaceId)
+        .get()
+        .timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            throw TimeoutException(
+                'Workspace lookup timed out reading workspaces/$workspaceId');
+          },
+        );
     return doc.exists ? Workspace.fromFirestore(doc) : null;
   }
 

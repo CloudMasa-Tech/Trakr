@@ -16,13 +16,12 @@ import 'geo_tag/geo_tag_screen.dart';
 import 'admin/attendance_history_screen.dart';
 import 'admin/manager_attendance_log_screen.dart';
 import 'admin/weekend_holiday_screen.dart';
-import 'admin/manager_requests_screen.dart';
 import 'admin/notifications_history_screen.dart';
 
 import 'admin/team_directory_screen.dart';
 import 'admin/user_roles_screen.dart';
 import 'admin/designations_screen.dart';
-import 'staff/checkout_request_screen.dart';
+import 'approve_requests/approve_requests_screen.dart';
 import 'admin/payroll_screen.dart';
 import 'admin/monthly_analysis_screen.dart';
 import '../theme/app_theme_colors.dart';
@@ -273,10 +272,6 @@ class _AppShellState extends State<AppShell> {
 
       case 7:
         return const _SystemSettingsScreen();
-      case 8:
-        return const ManagerRequestsScreen();
-      case 9:
-        return const CheckoutRequestScreen();
       case 11:
         return const AttendanceHistoryScreen();
       case 12:
@@ -289,6 +284,8 @@ class _AppShellState extends State<AppShell> {
         return const UserRolesScreen();
       case 16:
         return const DesignationsScreen();
+      case 17:
+        return const ApproveRequestsScreen(isCompanyWide: true);
       default:
         return const AttendanceDashboardScreen();
     }
@@ -1345,6 +1342,11 @@ class _AppShellState extends State<AppShell> {
       builder: (context) {
         final moreItems = [
           {
+            'index': 17,
+            'label': 'Approve Requests',
+            'icon': Icons.fact_check_outlined
+          },
+          {
             'index': 12,
             'label': 'Manager Activity Log',
             'icon': Icons.manage_history_rounded
@@ -1363,16 +1365,6 @@ class _AppShellState extends State<AppShell> {
             'index': 7,
             'label': 'Settings',
             'icon': Icons.settings_outlined
-          },
-          {
-            'index': 9,
-            'label': 'Checkout Request',
-            'icon': Icons.assignment_late_outlined
-          },
-          {
-            'index': 8,
-            'label': 'Manager Requests',
-            'icon': Icons.notifications_active_outlined
           },
           {
             'index': 14,

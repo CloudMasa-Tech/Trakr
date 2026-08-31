@@ -65,8 +65,7 @@ class _SidebarState extends State<Sidebar> {
       case 11:
       case 12:
       case 13:
-      case 9:
-      case 8:
+      case 17:
         return _attendanceSection;
       case 4:
         return _payrollSection;
@@ -270,16 +269,10 @@ class _SidebarState extends State<Sidebar> {
                         label: 'Monthly Analysis',
                         onTap: widget.onItemSelected),
                     _SidebarItem(
-                        index: 9,
+                        index: 17,
                         selectedIndex: widget.selectedIndex,
-                        icon: Icons.assignment_late_outlined,
-                        label: 'Checkout Request',
-                        onTap: widget.onItemSelected),
-                    _SidebarItem(
-                        index: 8,
-                        selectedIndex: widget.selectedIndex,
-                        icon: Icons.notifications_active_outlined,
-                        label: 'Manager Requests',
+                        icon: Icons.fact_check_outlined,
+                        label: 'Approve Requests',
                         onTap: widget.onItemSelected),
                   ],
                 ),

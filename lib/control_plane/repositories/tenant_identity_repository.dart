@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -32,8 +33,17 @@ class TenantIdentityRepository {
   Future<TenantIdentity?> getByEmail(String email) async {
     final normalized = email.trim().toLowerCase();
     if (normalized.isEmpty) return null;
-    final doc =
-        await _firestore.collection(_collectionName).doc(normalized).get();
+    final doc = await _firestore
+        .collection(_collectionName)
+        .doc(normalized)
+        .get()
+        .timeout(
+          const Duration(seconds: 10),
+          onTimeout: () {
+            throw TimeoutException(
+                'Login identity lookup timed out reading tenant_users/$normalized');
+          },
+        );
     return doc.exists ? TenantIdentity.fromDocument(doc) : null;
   }
 
