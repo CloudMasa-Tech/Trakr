@@ -20,11 +20,13 @@ import '../../services/leave_service.dart';
 import '../../services/notification_service.dart';
 import '../../services/permission_service.dart';
 import '../../services/profile_photo_sync_service.dart';
+import '../../services/staff_service.dart';
 import '../../theme/app_theme_colors.dart';
 import '../../utils/profile_photo_picker.dart';
 import '../../widgets/anniversary_greeting_dialog.dart';
 import '../../widgets/common/firestore_notification_banner.dart';
 import '../staff/staff_scan_qr_screen.dart';
+import '../admin/monthly_employee_analysis_screen.dart';
 import 'manager_team_members_screen.dart';
 import '../../widgets/dashboard/export_dropdown.dart';
 import '../../widgets/dashboard/holiday_calendar_widget.dart';
@@ -95,6 +97,14 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
   Timer? _overdueSyncTimer;
 
   int _selectedIndex = 0;
+  DateTime _monthlyAnalysisMonth = DateTime(
+    DateTime.now().year,
+    DateTime.now().month,
+  );
+  final TextEditingController _monthlyAnalysisSearchController =
+      TextEditingController();
+  String _monthlyAnalysisSearchQuery = '';
+  _ManagerMonthlyRowData? _monthlySelectedRow;
   int _present = 0;
   int _absent = 0;
   int _late = 0;
@@ -195,6 +205,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
     _monthlyStatsSub?.cancel();
     _overdueSyncTimer?.cancel();
     _attendanceSearchController.dispose();
+    _monthlyAnalysisSearchController.dispose();
     super.dispose();
   }
 
@@ -836,7 +847,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
       case 8:
         return _buildOwnLeaveAndPermissionPage();
       case 9:
-        return const SizedBox.shrink();
+        return _buildMonthlyAnalysisPage();
       default:
         return _ManagerHomeDashboard(
           managerName: _managerDisplayName,
@@ -970,6 +981,532 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
         ),
       ),
     );
+  }
+
+  Widget _buildMonthlyAnalysisPage() {
+    if (_isResolvingManager && _managerIdentifier == null) {
+      return SizedBox(
+        width: double.infinity,
+        child: Container(
+          margin: const EdgeInsets.only(top: 32, right: 32),
+          padding: const EdgeInsets.symmetric(vertical: 72, horizontal: 24),
+          decoration: BoxDecoration(
+            color: _ManagerDashTheme.surface,
+            borderRadius: BorderRadius.circular(22),
+            border: Border.all(color: _ManagerDashTheme.border),
+            boxShadow: const [
+              BoxShadow(
+                color: _ManagerDashTheme.shadow,
+                blurRadius: 24,
+                offset: Offset(0, 10),
+              ),
+            ],
+          ),
+          child: const Center(
+            child: CircularProgressIndicator(color: _ManagerDashTheme.primary),
+          ),
+        ),
+      );
+    }
+
+    final selectedSummary = _monthlySelectedRow;
+    if (selectedSummary != null) {
+      final selected = _monthlyAnalysisMonth;
+      // Mirror the Admin per-employee drill-down. Bounded height is required
+      // because the page content sits inside the dashboard's outer scroll view
+      // while the drill-down screen uses an internal Expanded.
+      return SizedBox(
+        height: MediaQuery.of(context).size.height -
+            (MediaQuery.of(context).size.width < 800 ? 130 : 190),
+        child: MonthlyEmployeeAnalysisScreen(
+          staff: selectedSummary.staff,
+          month: selected.month,
+          year: selected.year,
+          totalApprovedLeaves: selectedSummary.totalLeaveCount.round(),
+          onBack: () => setState(() => _monthlySelectedRow = null),
+        ),
+      );
+    }
+
+    final selected = _monthlyAnalysisMonth;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final isMobile = MediaQuery.of(context).size.width < 650;
+            const title = Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Monthly Analysis',
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    color: AppThemeColors.darkText,
+                  ),
+                ),
+                SizedBox(height: 4),
+                Text(
+                  'Overall and monthly results of attendance records',
+                  style: TextStyle(
+                    fontSize: 14,
+                    color: AppThemeColors.darkMuted,
+                  ),
+                ),
+              ],
+            );
+
+            if (isMobile) {
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  title,
+                  const SizedBox(height: 14),
+                  _buildMonthlyDateSelectors(),
+                ],
+              );
+            }
+
+            return Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                title,
+                _buildMonthlyDateSelectors(),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 16),
+        StreamBuilder<List<AttendanceModel>>(
+          stream: _attendanceService
+              .getMonthlyAttendanceStreamByManagerForMonth(
+                _attendanceManagerScope,
+                selected,
+              ),
+          builder: (context, attendanceSnapshot) {
+            return StreamBuilder<List<Staff>>(
+              stream: StaffService()
+                  .getTeamMembersByManager(_attendanceManagerScope),
+              builder: (context, staffSnapshot) {
+                return StreamBuilder<List<LeaveRequest>>(
+                  stream: _leaveService
+                      .getRequestsForManager(_attendanceManagerScope),
+                  builder: (context, leaveSnapshot) {
+                    final rows = _buildMonthlyRows(
+                      attendanceSnapshot.data ?? const <AttendanceModel>[],
+                      staffSnapshot.data ?? const <Staff>[],
+                      leaveSnapshot.data ?? const <LeaveRequest>[],
+                      selected,
+                    );
+
+                    return _buildMonthlySummaryTable(
+                      rows: rows,
+                      waiting: attendanceSnapshot.connectionState ==
+                              ConnectionState.waiting &&
+                          !attendanceSnapshot.hasData,
+                      errorText: attendanceSnapshot.hasError
+                          ? 'Unable to load monthly analysis.'
+                          : null,
+                      emptyText: 'No attendance records for '
+                          '${DateFormat('MMMM yyyy').format(selected)}.',
+                      onRowTap: (row) =>
+                          setState(() => _monthlySelectedRow = row),
+                    );
+                  },
+                );
+              },
+            );
+          },
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMonthlySummaryTable({
+    required List<_ManagerMonthlyRowData> rows,
+    required bool waiting,
+    required String? errorText,
+    required String emptyText,
+    required ValueChanged<_ManagerMonthlyRowData> onRowTap,
+  }) {
+    return Container(
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: AppThemeColors.darkSurface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: AppThemeColors.darkBorder),
+        boxShadow: const [
+          BoxShadow(
+            color: _maShadow,
+            blurRadius: 24,
+            offset: Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildMonthlyTableHeaderSection(),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final isMobile = constraints.maxWidth < 800;
+              if (isMobile) return const SizedBox.shrink();
+              return Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 26, vertical: 18),
+                decoration: const BoxDecoration(
+                  color: AppThemeColors.darkCanvas,
+                  border: Border(
+                    bottom: BorderSide(color: AppThemeColors.darkBorder),
+                  ),
+                ),
+                child: const Row(
+                  children: [
+                    Expanded(flex: 18, child: _ManagerMonthlyHeaderText('EMPLOYEE')),
+                    Expanded(flex: 14, child: _ManagerMonthlyHeaderText('DESIGNATION')),
+                    Expanded(flex: 14, child: _ManagerMonthlyHeaderText('POSITION')),
+                    Expanded(flex: 8, child: _ManagerMonthlyHeaderText('PRESENT')),
+                    Expanded(flex: 8, child: _ManagerMonthlyHeaderText('ABSENT')),
+                    Expanded(flex: 16, child: _ManagerMonthlyHeaderText('PENDING')),
+                    Expanded(flex: 16, child: _ManagerMonthlyHeaderText('PERMISSION')),
+                    Expanded(flex: 16, child: _ManagerMonthlyHeaderText('TOTAL PENDING')),
+                    Expanded(flex: 12, child: _ManagerMonthlyHeaderText('LEAVE')),
+                  ],
+                ),
+              );
+            },
+          ),
+          if (waiting)
+            const SizedBox(
+              height: 180,
+              child: Center(
+                child: CircularProgressIndicator(color: _maPrimary),
+              ),
+            )
+          else if (errorText != null)
+            SizedBox(
+              height: 120,
+              child: Center(
+                child: Text(
+                  errorText,
+                  style: const TextStyle(
+                    color: _maRed,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            )
+          else if (rows.isEmpty)
+            SizedBox(
+              height: 152,
+              child: Center(
+                child: Text(
+                  emptyText,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    color: AppThemeColors.darkMuted,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            )
+          else
+            ListView.separated(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              itemCount: rows.length,
+              separatorBuilder: (_, __) =>
+                  const Divider(height: 1, color: AppThemeColors.darkBorder),
+              itemBuilder: (context, index) => _ManagerMonthlyRow(
+                summary: rows[index],
+                formatTime: _formatMonthlyHours,
+                onTap: () => onRowTap(rows[index]),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMonthlyTableHeaderSection() {
+    return Padding(
+      padding: const EdgeInsets.all(22),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final isMobile = constraints.maxWidth < 600;
+          const titleWidget = Text(
+            'Monthly Summary Report',
+            style: TextStyle(
+              color: AppThemeColors.darkText,
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+            ),
+          );
+          final searchWidget = SizedBox(
+            width: isMobile ? double.infinity : 240,
+            height: 38,
+            child: TextField(
+              controller: _monthlyAnalysisSearchController,
+              onChanged: (val) =>
+                  setState(() => _monthlyAnalysisSearchQuery = val),
+              style: const TextStyle(color: _maWhite, fontSize: 13),
+              decoration: InputDecoration(
+                filled: true,
+                fillColor: AppThemeColors.darkCanvas,
+                hintText: 'Search employee...',
+                hintStyle: TextStyle(
+                  color: AppThemeColors.darkMuted.withValues(alpha: 0.5),
+                  fontSize: 13,
+                ),
+                contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+                prefixIcon: Icon(
+                  Icons.search,
+                  size: 16,
+                  color: AppThemeColors.darkMuted.withValues(alpha: 0.6),
+                ),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide:
+                      const BorderSide(color: AppThemeColors.darkBorder),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide:
+                      const BorderSide(color: AppThemeColors.darkBorder),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: const BorderSide(color: _maPrimary),
+                ),
+              ),
+            ),
+          );
+
+          if (isMobile) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                titleWidget,
+                const SizedBox(height: 12),
+                searchWidget,
+              ],
+            );
+          }
+
+          return Row(
+            children: [
+              titleWidget,
+              const Spacer(),
+              searchWidget,
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildMonthlyDateSelectors() {
+    final selected = _monthlyAnalysisMonth;
+    return Row(
+      children: [
+        Container(
+          height: 40,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: AppThemeColors.darkCanvas,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppThemeColors.darkBorder),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<int>(
+              value: selected.month,
+              dropdownColor: AppThemeColors.darkSurface,
+              icon: const Icon(Icons.arrow_drop_down,
+                  color: AppThemeColors.darkMuted),
+              style: const TextStyle(
+                color: AppThemeColors.darkText,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+              items: List.generate(12, (index) {
+                return DropdownMenuItem<int>(
+                  value: index + 1,
+                  child: Text(_kMonthlyMonths[index]),
+                );
+              }),
+              onChanged: (val) {
+                if (val != null) {
+                  setState(() {
+                    _monthlyAnalysisMonth = DateTime(selected.year, val);
+                  });
+                }
+              },
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Container(
+          height: 40,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: AppThemeColors.darkCanvas,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppThemeColors.darkBorder),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<int>(
+              value: selected.year,
+              dropdownColor: AppThemeColors.darkSurface,
+              icon: const Icon(Icons.arrow_drop_down,
+                  color: AppThemeColors.darkMuted),
+              style: const TextStyle(
+                color: AppThemeColors.darkText,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+              items: _monthlyYearOptions.map((year) {
+                return DropdownMenuItem<int>(
+                  value: year,
+                  child: Text(year.toString()),
+                );
+              }).toList(),
+              onChanged: (val) {
+                if (val != null) {
+                  setState(() {
+                    _monthlyAnalysisMonth = DateTime(val, selected.month);
+                  });
+                }
+              },
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<int> get _monthlyYearOptions {
+    final currentYear = DateTime.now().year;
+    return List.generate(11, (index) => currentYear - 5 + index);
+  }
+
+  List<_ManagerMonthlyRowData> _buildMonthlyRows(
+    List<AttendanceModel> records,
+    List<Staff> team,
+    List<LeaveRequest> requests,
+    DateTime month,
+  ) {
+    final staffByKey = <String, Staff>{};
+    for (final staff in team) {
+      final key = staff.employeeId.trim().isNotEmpty
+          ? staff.employeeId.trim()
+          : staff.id;
+      staffByKey[key] = staff;
+    }
+
+    final summaries = <String, _ManagerMonthlyRowData>{};
+    for (final staff in team) {
+      if (staff.employeeId.trim().isEmpty) continue;
+      summaries[staff.employeeId.trim()] = _ManagerMonthlyRowData(staff);
+    }
+
+    final approvedLeaves =
+        requests.where((request) => request.status == 'approved').toList();
+    for (final summary in summaries.values) {
+      _calculateMonthlyLeavesInMonth(summary, approvedLeaves, month);
+    }
+
+    for (final record in records) {
+      final employeeId = record.employeeId.trim();
+      var summary = summaries[employeeId];
+      if (summary == null) {
+        final fallbackStaff = staffByKey[employeeId] ??
+            Staff(
+              id: record.employeeId,
+              name: record.employeeName.trim().isEmpty
+                  ? 'Unknown'
+                  : record.employeeName.trim(),
+              email: '',
+              phone: '',
+              department: '',
+              position: '',
+              employeeId: record.employeeId,
+              joinDate: DateTime.now(),
+            );
+        summary = _ManagerMonthlyRowData(fallbackStaff);
+        summaries[employeeId] = summary;
+        _calculateMonthlyLeavesInMonth(summary, approvedLeaves, month);
+      }
+
+      if (record.countsAsAbsent) {
+        summary.absentCount++;
+      } else if (record.countsAsAttended) {
+        summary.presentCount++;
+      }
+      summary.pendingMinutes += record.displayPendingMinutes;
+      summary.permissionMinutes += record.permissionMinutes;
+    }
+
+    var rows = summaries.values.toList();
+    final query = _monthlyAnalysisSearchQuery.trim().toLowerCase();
+    if (query.isNotEmpty) {
+      rows = rows.where((row) {
+        return row.staff.name.toLowerCase().contains(query) ||
+            row.staff.employeeId.toLowerCase().contains(query) ||
+            row.staff.department.toLowerCase().contains(query);
+      }).toList();
+    }
+    rows.sort(
+        (a, b) => a.staff.name.toLowerCase().compareTo(b.staff.name.toLowerCase()));
+    return rows;
+  }
+
+  void _calculateMonthlyLeavesInMonth(
+    _ManagerMonthlyRowData summary,
+    List<LeaveRequest> requests,
+    DateTime month,
+  ) {
+    final empId = summary.staff.employeeId;
+    for (final request in requests) {
+      if (request.userId != empId && request.employeeId != empId) continue;
+
+      final start = request.startDate;
+      final end = request.endDate;
+      final isPaid = request.isPaid;
+      final isHalfDay = request.type.toLowerCase().contains('half');
+      final paidPerRequest = request.paidDayCount;
+      final unpaidPerRequest = request.unpaidDayCount;
+      final requestDays = request.leaveDayCount > 0
+          ? request.leaveDayCount
+          : (isHalfDay
+              ? (end.difference(start).inDays + 1) * 0.5
+              : (end.difference(start).inDays + 1).toDouble());
+
+      var current = DateTime(start.year, start.month, start.day);
+      final last = DateTime(end.year, end.month, end.day);
+
+      while (!current.isAfter(last)) {
+        if (current.month == month.month && current.year == month.year) {
+          final dayValue = isHalfDay ? 0.5 : 1.0;
+          if (paidPerRequest != 0 || unpaidPerRequest != 0) {
+            final paidRatio =
+                requestDays == 0 ? 0.0 : paidPerRequest / requestDays;
+            final unpaidRatio =
+                requestDays == 0 ? 0.0 : unpaidPerRequest / requestDays;
+            summary.paidLeaveCount += dayValue * paidRatio;
+            summary.unpaidLeaveCount += dayValue * unpaidRatio;
+          } else if (isPaid) {
+            summary.paidLeaveCount += dayValue;
+          } else {
+            summary.unpaidLeaveCount += dayValue;
+          }
+        }
+        current = current.add(const Duration(days: 1));
+      }
+    }
   }
 
   Widget _buildLeaveRequestPage() {
@@ -4982,15 +5519,28 @@ class _ManagerSidebar extends StatelessWidget {
                   const SizedBox(height: 14),
                   _SidebarNavItem(
                     icon: Icons.home_rounded,
-                    label: 'Home',
+                    label: 'Analytics',
                     selected: selectedIndex == 0,
                     onPressed: () => onItemSelected(0),
                   ),
-                  _SidebarNavItem(
+                  _ExpandableNavGroup(
                     icon: Icons.calendar_month_rounded,
-                    label: 'Attendances Log',
-                    selected: selectedIndex == 1,
-                    onPressed: () => onItemSelected(1),
+                    label: 'Attendance Monitoring',
+                    active: selectedIndex == 1 || selectedIndex == 9,
+                    children: [
+                      _SidebarNavItem(
+                        icon: Icons.receipt_long_rounded,
+                        label: 'Attendance Log',
+                        selected: selectedIndex == 1,
+                        onPressed: () => onItemSelected(1),
+                      ),
+                      _SidebarNavItem(
+                        icon: Icons.bar_chart_rounded,
+                        label: 'Monthly Analysis',
+                        selected: selectedIndex == 9,
+                        onPressed: () => onItemSelected(9),
+                      ),
+                    ],
                   ),
                   _SidebarNavItem(
                     icon: Icons.badge_rounded,
@@ -5067,6 +5617,132 @@ class _ManagerSidebar extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ExpandableNavGroup extends StatefulWidget {
+  final IconData icon;
+  final String label;
+  final bool active;
+  final List<Widget> children;
+
+  const _ExpandableNavGroup({
+    required this.icon,
+    required this.label,
+    required this.active,
+    required this.children,
+  });
+
+  @override
+  State<_ExpandableNavGroup> createState() => _ExpandableNavGroupState();
+}
+
+class _ExpandableNavGroupState extends State<_ExpandableNavGroup> {
+  bool _expanded = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = widget.active;
+  }
+
+  @override
+  void didUpdateWidget(_ExpandableNavGroup oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) {
+      setState(() => _expanded = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SidebarSectionHeader(
+          icon: widget.icon,
+          label: widget.label,
+          expanded: _expanded,
+          highlighted: widget.active,
+          onPressed: () => setState(() => _expanded = !_expanded),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 200),
+          curve: Curves.easeInOut,
+          alignment: Alignment.topCenter,
+          child: _expanded
+              ? Padding(
+                  padding: const EdgeInsets.only(left: 16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: widget.children,
+                  ),
+                )
+              : const SizedBox(width: double.infinity),
+        ),
+      ],
+    );
+  }
+}
+
+class _SidebarSectionHeader extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool expanded;
+  final bool highlighted;
+  final VoidCallback onPressed;
+
+  const _SidebarSectionHeader({
+    required this.icon,
+    required this.label,
+    required this.expanded,
+    required this.highlighted,
+    required this.onPressed,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Material(
+        color: highlighted ? AppThemeColors.actionEnd : Colors.transparent,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onPressed,
+          child: Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            child: Row(
+              children: [
+                Icon(icon, color: Colors.white, size: 22),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: highlighted
+                          ? FontWeight.w700
+                          : FontWeight.w500,
+                    ),
+                  ),
+                ),
+                AnimatedRotation(
+                  turns: expanded ? 0.5 : 0,
+                  duration: const Duration(milliseconds: 200),
+                  child: const Icon(
+                    Icons.expand_more_rounded,
+                    color: Colors.white70,
+                    size: 22,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -7309,3 +7985,564 @@ class _ManagerNotificationItem {
     this.anniversaryGreeting,
   });
 }
+
+// Fixed-brand palette for the Manager "Monthly Analysis" screen (force-dark),
+// kept in lock-step with the Admin monthly analysis screen.
+const Color _maPrimary = Color(0xFF0F766E);
+const Color _maAmber = Color(0xFFFFB800);
+const Color _maRed = Color(0xFFFF5757);
+const Color _maGreen = Color(0xFF00C896);
+const Color _maCyan = Color(0xFF22D3EE);
+const Color _maShadow = Color(0x1A6B7897);
+const Color _maWhite = Color(0xFFFFFFFF);
+
+const List<String> _kMonthlyMonths = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December'
+];
+
+class _ManagerMonthlyRowData {
+  final Staff staff;
+  int presentCount = 0;
+  int absentCount = 0;
+  int pendingMinutes = 0;
+  int permissionMinutes = 0;
+  double paidLeaveCount = 0;
+  double unpaidLeaveCount = 0;
+
+  int get totalPendingMinutes => pendingMinutes + permissionMinutes;
+  double get totalLeaveCount => paidLeaveCount + unpaidLeaveCount;
+
+  _ManagerMonthlyRowData(this.staff);
+}
+
+String _formatMonthlyHours(int totalMinutes) {
+  final hours = totalMinutes ~/ 60;
+  final mins = totalMinutes % 60;
+  return '$hours hrs ${mins.toString().padLeft(2, '0')} min';
+}
+
+String _formatMonthlyLeaveDays(double days) {
+  if (days == days.roundToDouble()) return days.toInt().toString();
+  return days.toStringAsFixed(1);
+}
+
+class _ManagerMonthlyHeaderText extends StatelessWidget {
+  final String label;
+
+  const _ManagerMonthlyHeaderText(this.label);
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      label,
+      style: const TextStyle(
+        color: AppThemeColors.darkMuted,
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 0.5,
+      ),
+    );
+  }
+}
+
+
+
+class _ManagerMonthlyRow extends StatelessWidget {
+  final _ManagerMonthlyRowData summary;
+  final String Function(int) formatTime;
+  final VoidCallback onTap;
+
+  const _ManagerMonthlyRow({
+    required this.summary,
+    required this.formatTime,
+    required this.onTap,
+  });
+
+  Widget _buildMobileDetailItem(IconData icon, String label, String value,
+      {Color? textColor}) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 16, color: AppThemeColors.darkMuted),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                    color: AppThemeColors.darkMuted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 1),
+              Text(
+                value,
+                style: TextStyle(
+                    color: textColor ?? AppThemeColors.darkText,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildApprovedLeaveDetailItem(_ManagerMonthlyRowData summary) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Icon(Icons.calendar_today_outlined,
+            size: 16, color: AppThemeColors.darkMuted),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text(
+                'Approved Leave',
+                style: TextStyle(
+                    color: AppThemeColors.darkMuted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w500),
+              ),
+              const SizedBox(height: 2),
+              if (summary.totalLeaveCount == 0)
+                const Text(
+                  '0',
+                  style: TextStyle(
+                      color: AppThemeColors.darkMuted,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600),
+                )
+              else
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (summary.paidLeaveCount > 0)
+                      Text(
+                        'Paid: ${_formatMonthlyLeaveDays(summary.paidLeaveCount)}',
+                        style: const TextStyle(
+                            color: _maCyan,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600),
+                      ),
+                    if (summary.unpaidLeaveCount > 0)
+                      Text(
+                        'Unpaid: ${_formatMonthlyLeaveDays(summary.unpaidLeaveCount)}',
+                        style: const TextStyle(
+                            color: _maAmber,
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600),
+                      ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mediaWidth = MediaQuery.of(context).size.width;
+    final isMobile = mediaWidth < 800;
+
+    if (isMobile) {
+      return InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: _maPrimary.withValues(alpha: 0.2),
+                    child: Text(
+                      summary.staff.name.isNotEmpty
+                          ? summary.staff.name[0].toUpperCase()
+                          : 'E',
+                      style: const TextStyle(
+                        color: _maPrimary,
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          summary.staff.name,
+                          style: const TextStyle(
+                            color: AppThemeColors.darkText,
+                            fontSize: 14.5,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          summary.staff.employeeId,
+                          style: TextStyle(
+                            color:
+                                AppThemeColors.darkMuted.withValues(alpha: 0.7),
+                            fontSize: 11.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppThemeColors.darkCanvas,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: AppThemeColors.darkBorder),
+                    ),
+                    child: Text(
+                      summary.staff.position.isNotEmpty
+                          ? summary.staff.position
+                          : '-',
+                      style: const TextStyle(
+                        color: AppThemeColors.darkMuted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Divider(color: AppThemeColors.darkBorder, height: 1),
+              const SizedBox(height: 12),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildMobileDetailItem(
+                          Icons.business_outlined,
+                          'Designation',
+                          summary.staff.department,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: _buildMobileDetailItem(
+                          Icons.check_circle_outline,
+                          'Present Days',
+                          '${summary.presentCount}',
+                          textColor: _maGreen,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: _buildMobileDetailItem(
+                          Icons.cancel_outlined,
+                          'Absent Days',
+                          '${summary.absentCount}',
+                          textColor: _maRed,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(
+                        child: _buildMobileDetailItem(
+                          Icons.hourglass_empty_outlined,
+                          'Pending Hours',
+                          formatTime(summary.pendingMinutes),
+                          textColor:
+                              summary.pendingMinutes > 0 ? _maAmber : null,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(
+                        child: _buildMobileDetailItem(
+                          Icons.vpn_key_outlined,
+                          'Permission Hours',
+                          formatTime(summary.permissionMinutes),
+                          textColor:
+                              summary.permissionMinutes > 0 ? _maPrimary : null,
+                        ),
+                      ),
+                      const SizedBox(width: 16),
+                      Expanded(child: _buildApprovedLeaveDetailItem(summary)),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  _buildMobileDetailItem(
+                    Icons.calculate_outlined,
+                    'Total Pending Hours',
+                    formatTime(summary.totalPendingMinutes),
+                    textColor: summary.totalPendingMinutes > 0 ? _maRed : null,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 26, vertical: 16),
+        child: Row(
+          children: [
+            Expanded(
+              flex: 18,
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 15,
+                    backgroundColor: _maPrimary.withValues(alpha: 0.2),
+                    child: Text(
+                      summary.staff.name.isNotEmpty
+                          ? summary.staff.name[0].toUpperCase()
+                          : 'E',
+                      style: const TextStyle(
+                        color: _maPrimary,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          summary.staff.name,
+                          style: const TextStyle(
+                            color: AppThemeColors.darkText,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        Text(
+                          summary.staff.employeeId,
+                          style: TextStyle(
+                            color:
+                                AppThemeColors.darkMuted.withValues(alpha: 0.7),
+                            fontSize: 10.5,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              flex: 14,
+              child: Text(
+                summary.staff.department,
+                style: const TextStyle(
+                  color: AppThemeColors.darkMuted,
+                  fontSize: 13,
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 14,
+              child: Text(
+                summary.staff.position.isNotEmpty
+                    ? summary.staff.position
+                    : '-',
+                style: const TextStyle(
+                  color: AppThemeColors.darkMuted,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 8,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _maGreen.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '${summary.presentCount}',
+                    style: const TextStyle(
+                      color: _maGreen,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 8,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: _maRed.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    '${summary.absentCount}',
+                    style: const TextStyle(
+                      color: _maRed,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 16,
+              child: Text(
+                formatTime(summary.pendingMinutes),
+                style: TextStyle(
+                  color: summary.pendingMinutes > 0
+                      ? _maAmber
+                      : AppThemeColors.darkMuted,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 16,
+              child: Text(
+                formatTime(summary.permissionMinutes),
+                style: TextStyle(
+                  color: summary.permissionMinutes > 0
+                      ? _maPrimary
+                      : AppThemeColors.darkMuted,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 16,
+              child: Text(
+                formatTime(summary.totalPendingMinutes),
+                style: TextStyle(
+                  color: summary.totalPendingMinutes > 0
+                      ? _maRed
+                      : AppThemeColors.darkMuted,
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            Expanded(
+              flex: 12,
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: summary.totalLeaveCount == 0
+                    ? Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color:
+                              AppThemeColors.darkMuted.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Text(
+                          '0',
+                          style: TextStyle(
+                            color: AppThemeColors.darkMuted,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      )
+                    : Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (summary.paidLeaveCount > 0)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              margin: const EdgeInsets.only(bottom: 2),
+                              decoration: BoxDecoration(
+                                color: _maPrimary.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                'Paid: ${_formatMonthlyLeaveDays(summary.paidLeaveCount)}',
+                                style: const TextStyle(
+                                    color: _maCyan,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                          if (summary.unpaidLeaveCount > 0)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: _maAmber.withValues(alpha: 0.12),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              child: Text(
+                                'Unpaid: ${_formatMonthlyLeaveDays(summary.unpaidLeaveCount)}',
+                                style: const TextStyle(
+                                    color: _maAmber,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                        ],
+                      ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+

@@ -1043,6 +1043,43 @@ class AttendanceService {
     }).asBroadcastStream();
   }
 
+  /// Parametrized variant of [getMonthlyAttendanceStreamByManager] that streams
+  /// the given manager's team attendance for a specific calendar month.
+  ///
+  /// Reads the same `attendance` collection and applies the same manager-team
+  /// scoping as every other manager data source, so no additional Firestore
+  /// security rule or index is required. Backs the Manager "Monthly Analysis"
+  /// view's month selector.
+  Stream<List<AttendanceModel>> getMonthlyAttendanceStreamByManagerForMonth(
+    String managerName,
+    DateTime forMonth,
+  ) {
+    final startOfMonth = DateTime(forMonth.year, forMonth.month, 1);
+    final endOfMonth = DateTime(forMonth.year, forMonth.month + 1, 1);
+
+    return _teamEmployeeIdsStream(managerName).asyncExpand((staffIds) {
+      if (staffIds.isEmpty) return Stream.value(<AttendanceModel>[]);
+      final staffIdSet = staffIds.toSet();
+
+      final query = _db
+          .collection('attendance')
+          .where(
+            'date',
+            isGreaterThanOrEqualTo: Timestamp.fromDate(startOfMonth),
+          )
+          .where('date', isLessThan: Timestamp.fromDate(endOfMonth))
+          .orderBy('date', descending: true);
+
+      return _attendanceRecordsWithLiveOfficeTimes(
+        query,
+        (snap, fromDoc) => snap.docs
+            .map(fromDoc)
+            .where((record) => staffIdSet.contains(record.employeeId))
+            .toList(),
+      );
+    }).asBroadcastStream();
+  }
+
   // ─── Weekly Trend ─────────────────────────────────────────────────────
   Stream<List<WeeklyAttendance>> getWeeklyTrendStream() {
     final now = DateTime.now();

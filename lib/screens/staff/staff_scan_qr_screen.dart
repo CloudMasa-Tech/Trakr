@@ -10,6 +10,9 @@ import 'package:intl/intl.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../utils/scan_sound_stub.dart'
+    if (dart.library.html) '../../utils/scan_sound_web.dart';
+
 import '../../firebase/firebase_context_provider.dart';
 import '../../theme/app_theme_colors.dart';
 import '../../models/attendance_model.dart';
@@ -765,6 +768,7 @@ class _StaffScanQRScreenState extends State<StaffScanQRScreen>
       _scanLocking = true;
       _infoMessage = 'QR detected. Locking focus...';
     });
+    _playScanFeedback(candidate: true);
     await Future<void>.delayed(const Duration(milliseconds: 420));
     await _handleScannedRawValue(rawValue);
     if (mounted && _scannedToken == null) {
@@ -822,6 +826,17 @@ class _StaffScanQRScreenState extends State<StaffScanQRScreen>
       _infoMessage = tokenValidation.message;
       _scanLocking = false;
     });
+    _playScanFeedback();
+  }
+
+  void _playScanFeedback({bool candidate = false}) {
+    if (kIsWeb) {
+      playScanBeep(short: candidate);
+    } else {
+      unawaited(
+        candidate ? HapticFeedback.selectionClick() : HapticFeedback.vibrate(),
+      );
+    }
   }
 
   bool _recentlyRejectedSameScan(String rawValue) {
@@ -854,8 +869,9 @@ class _StaffScanQRScreenState extends State<StaffScanQRScreen>
       setState(() {
         _cameraPermissionGranted = false;
         _scanSessionOpen = false;
-        _errorMessage =
-            'Camera permission denied. Please allow camera access to scan the QR code.';
+        _errorMessage = kIsWeb
+            ? 'Camera access was blocked. Click the camera icon in the browser\u2019s address bar, choose \u201cAllow\u201d, then restart the scan.'
+            : 'Camera permission denied. Please allow camera access to scan the QR code.';
         _infoMessage = null;
         _isLoading = false;
       });
@@ -866,12 +882,15 @@ class _StaffScanQRScreenState extends State<StaffScanQRScreen>
       setState(() {
         _cameraPermissionGranted = false;
         _scanSessionOpen = false;
-        _errorMessage =
-            'Camera permission is permanently denied. Enable it from app settings to continue.';
+        _errorMessage = kIsWeb
+            ? 'Camera access is blocked. Click the camera icon in your browser\u2019s address bar, choose \u201cAllow\u201d, then reload the page to continue.'
+            : 'Camera permission is permanently denied. Enable it from app settings to continue.';
         _infoMessage = null;
         _isLoading = false;
       });
-      openAppSettings();
+      if (!kIsWeb) {
+        openAppSettings();
+      }
       return false;
     }
 
@@ -1433,13 +1452,32 @@ class _StaffScanQRScreenState extends State<StaffScanQRScreen>
             children: [
               _scannerActive
                   ? _useEmbeddedScanner
-                      ? MobileScanner(
-                          key: ValueKey(
-                            'staff_qr_embedded_scanner_$_scanSessionOpen',
-                          ),
-                          controller: _scannerController,
-                          fit: BoxFit.cover,
-                          onDetect: _handleBarcode,
+                      ? LayoutBuilder(
+                          builder: (context, constraints) {
+                            final cameraWidth = constraints.maxWidth;
+                            final cameraHeight = constraints.maxHeight;
+                            final side = ((fullScreen ? 0.62 : 0.54) *
+                                        cameraWidth)
+                                    .clamp(0.0, cameraHeight)
+                                    .toDouble();
+                            final scanWindow = Rect.fromCenter(
+                              center: Offset(
+                                cameraWidth / 2,
+                                cameraHeight / 2,
+                              ),
+                              width: side,
+                              height: side,
+                            );
+                            return MobileScanner(
+                              key: ValueKey(
+                                'staff_qr_embedded_scanner_$_scanSessionOpen',
+                              ),
+                              controller: _scannerController,
+                              fit: BoxFit.cover,
+                              scanWindow: scanWindow,
+                              onDetect: _handleBarcode,
+                            );
+                          },
                         )
                       : Container(
                           color: _StaffScanTheme.black,
@@ -1501,9 +1539,20 @@ class _StaffScanQRScreenState extends State<StaffScanQRScreen>
                 Center(
                   child: FractionallySizedBox(
                     widthFactor: fullScreen ? 0.62 : 0.54,
-                    child: const AspectRatio(
+                    child: AspectRatio(
                       aspectRatio: 1,
-                      child: _GoogleScannerFrame(),
+                      child: Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          _GoogleScannerFrame(isLocking: _scanLocking),
+                          if (_useEmbeddedScanner &&
+                              !_scanLocking &&
+                              _scannedToken == null)
+                            const IgnorePointer(
+                              child: _ScanSweepOverlay(),
+                            ),
+                        ],
+                      ),
                     ),
                   ),
                 ),
@@ -1544,17 +1593,18 @@ class _StaffScanQRScreenState extends State<StaffScanQRScreen>
                       ),
                     ),
                   ),
-                  Positioned(
-                    top: 42,
-                    right: 48,
-                    child: _ScannerCircleButton(
-                      icon: Icons.flash_off_rounded,
-                      label: 'Torch',
-                      onTap: _useEmbeddedScanner
-                          ? _scannerController.toggleTorch
-                          : null,
+                  if (!kIsWeb)
+                    Positioned(
+                      top: 42,
+                      right: 48,
+                      child: _ScannerCircleButton(
+                        icon: Icons.flash_off_rounded,
+                        label: 'Torch',
+                        onTap: _useEmbeddedScanner
+                            ? _scannerController.toggleTorch
+                            : null,
+                      ),
                     ),
-                  ),
                   const Positioned(
                     left: 54,
                     right: 54,
@@ -1562,17 +1612,18 @@ class _StaffScanQRScreenState extends State<StaffScanQRScreen>
                     child: _GoogleScannerAttribution(),
                   ),
                 ] else ...[
-                  Positioned(
-                    top: 18,
-                    right: 80,
-                    child: _ScannerIconPill(
-                      icon: Icons.flash_off_rounded,
-                      label: 'Torch',
-                      onTap: _useEmbeddedScanner
-                          ? _scannerController.toggleTorch
-                          : null,
+                  if (!kIsWeb)
+                    Positioned(
+                      top: 18,
+                      right: 80,
+                      child: _ScannerIconPill(
+                        icon: Icons.flash_off_rounded,
+                        label: 'Torch',
+                        onTap: _useEmbeddedScanner
+                            ? _scannerController.toggleTorch
+                            : null,
+                      ),
                     ),
-                  ),
                   const Positioned(
                     top: 18,
                     right: 22,
@@ -2754,13 +2805,44 @@ class _CornerBracketPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
-class _GoogleScannerFrame extends StatelessWidget {
-  const _GoogleScannerFrame();
+class _GoogleScannerFrame extends StatefulWidget {
+  final bool isLocking;
+
+  const _GoogleScannerFrame({this.isLocking = false});
+
+  @override
+  State<_GoogleScannerFrame> createState() => _GoogleScannerFrameState();
+}
+
+class _GoogleScannerFrameState extends State<_GoogleScannerFrame>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _breathController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1900),
+  )..repeat(reverse: true);
+  late final Animation<double> _breath = CurvedAnimation(
+    parent: _breathController,
+    curve: Curves.easeInOut,
+  );
+
+  @override
+  void dispose() {
+    _breathController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(
-      painter: _GoogleScannerFramePainter(),
+    return AnimatedBuilder(
+      animation: _breath,
+      builder: (context, _) {
+        return CustomPaint(
+          painter: _GoogleScannerFramePainter(
+            breath: _breath.value,
+            isLocking: widget.isLocking,
+          ),
+        );
+      },
     );
   }
 }
@@ -2771,14 +2853,24 @@ class _GoogleScannerFramePainter extends CustomPainter {
   static const _bottomLeft = AppThemeColors.googleGreenDark;
   static const _bottomRight = AppThemeColors.googleRed;
 
+  final double breath;
+  final bool isLocking;
+
+  const _GoogleScannerFramePainter({
+    this.breath = 0.5,
+    this.isLocking = false,
+  });
+
   @override
   void paint(Canvas canvas, Size size) {
-    final strokeWidth = (size.shortestSide * 0.018).clamp(6.0, 10.0);
+    final breathe = 0.82 + 0.18 * breath;
+    final strokeWidth =
+        (size.shortestSide * 0.018).clamp(6.0, 10.0) * (isLocking ? 1.35 : 1.0);
     final radius = size.shortestSide * 0.14;
     final arm = size.shortestSide * 0.31;
 
     Paint paint(Color color) => Paint()
-      ..color = color
+      ..color = color.withValues(alpha: breathe)
       ..style = PaintingStyle.stroke
       ..strokeWidth = strokeWidth
       ..strokeCap = StrokeCap.square
@@ -2810,14 +2902,126 @@ class _GoogleScannerFramePainter extends CustomPainter {
       )
       ..lineTo(size.width - arm, size.height);
 
+    if (isLocking) {
+      _drawSuccessGlow(
+        canvas,
+        strokeWidth * 3.2,
+        size,
+        topLeft,
+        topRight,
+        bottomLeft,
+        bottomRight,
+      );
+    }
+
     canvas.drawPath(topLeft, paint(_topLeft));
     canvas.drawPath(topRight, paint(_topRight));
     canvas.drawPath(bottomLeft, paint(_bottomLeft));
     canvas.drawPath(bottomRight, paint(_bottomRight));
   }
 
+  void _drawSuccessGlow(
+    Canvas canvas,
+    double strokeWidth,
+    Size size,
+    Path topLeft,
+    Path topRight,
+    Path bottomLeft,
+    Path bottomRight,
+  ) {
+    final glow = Paint()
+      ..color = _StaffScanTheme.success.withValues(alpha: 0.5)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = strokeWidth
+      ..strokeCap = StrokeCap.square
+      ..strokeJoin = StrokeJoin.round
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14);
+
+    canvas.drawPath(topLeft, glow);
+    canvas.drawPath(topRight, glow);
+    canvas.drawPath(bottomLeft, glow);
+    canvas.drawPath(bottomRight, glow);
+  }
+
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
+  bool shouldRepaint(covariant _GoogleScannerFramePainter oldDelegate) {
+    return oldDelegate.breath != breath || oldDelegate.isLocking != isLocking;
+  }
+}
+
+class _ScanSweepOverlay extends StatefulWidget {
+  const _ScanSweepOverlay();
+
+  @override
+  State<_ScanSweepOverlay> createState() => _ScanSweepOverlayState();
+}
+
+class _ScanSweepOverlayState extends State<_ScanSweepOverlay>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1700),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        return CustomPaint(
+          painter: _ScanSweepPainter(position: _controller.value),
+        );
+      },
+    );
+  }
+}
+
+class _ScanSweepPainter extends CustomPainter {
+  final double position;
+
+  const _ScanSweepPainter({required this.position});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final fadeSpan = size.height * 0.12;
+    final y = position * size.height;
+
+    final shader = LinearGradient(
+      begin: Alignment.topCenter,
+      end: Alignment.bottomCenter,
+      colors: [
+        _StaffScanTheme.success.withValues(alpha: 0.0),
+        _StaffScanTheme.success.withValues(alpha: 0.9),
+        _StaffScanTheme.success.withValues(alpha: 0.0),
+      ],
+      stops: const [0.0, 0.5, 1.0],
+    ).createShader(
+      Rect.fromLTWH(0, y - fadeSpan, size.width, fadeSpan * 2),
+    );
+
+    final band = Paint()..shader = shader;
+    canvas.drawRect(
+      Rect.fromLTWH(0, y - fadeSpan, size.width, fadeSpan * 2),
+      band,
+    );
+
+    final core = Paint()
+      ..color = _StaffScanTheme.success.withValues(alpha: 0.95)
+      ..strokeWidth = 2.5
+      ..strokeCap = StrokeCap.round;
+    canvas.drawLine(Offset(0, y), Offset(size.width, y), core);
+  }
+
+  @override
+  bool shouldRepaint(covariant _ScanSweepPainter oldDelegate) {
+    return oldDelegate.position != position;
+  }
 }
 
 class _ScannerCircleButton extends StatelessWidget {
