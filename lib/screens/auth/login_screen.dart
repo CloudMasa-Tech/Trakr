@@ -26,10 +26,13 @@ class _LoginScreenState extends State<LoginScreen> {
   final _passwordCtrl = TextEditingController();
   final _passwordFocus = FocusNode();
   bool _obscurePassword = true;
+  int _buildCount = 0;
 
   @override
   void initState() {
     super.initState();
+    AuthSessionProvider.timingLog(
+        'LoginScreen.initState (first mount or re-mount)');
     _emailCtrl.text = widget.initialEmail ?? '';
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -47,6 +50,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   void dispose() {
+    AuthSessionProvider.timingLog('LoginScreen.dispose');
     _emailCtrl.dispose();
     _passwordCtrl.dispose();
     _passwordFocus.dispose();
@@ -55,6 +59,10 @@ class _LoginScreenState extends State<LoginScreen> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+
+    // Reset the login-timing anchor — "Sign in" was tapped. Every boundary in
+    // the login chain logs `[LOGIN_TIMING] ... elapsed=` relative to this point.
+    AuthSessionProvider.markLoginStart();
 
     try {
       final auth = context.read<AuthSessionProvider>();
@@ -72,8 +80,12 @@ class _LoginScreenState extends State<LoginScreen> {
       final slug = auth.workspaceSlug;
       final role = auth.role;
       if (slug != null && slug.isNotEmpty && role != null && role != AppUserRole.superAdmin) {
+        AuthSessionProvider.timingLog(
+            'login_screen: navigating to /workspace/$slug/dashboard (role=${role.value})');
         context.go('/workspace/$slug/dashboard');
       } else {
+        AuthSessionProvider.timingLog(
+            'login_screen: navigating to / (role=${role?.value}, slug=$slug)');
         context.go('/');
       }
     } catch (e) {
@@ -117,6 +129,11 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthSessionProvider>();
+    _buildCount++;
+    AuthSessionProvider.timingLog(
+        'LoginScreen.build #$_buildCount | isLoading=${auth.isLoading} '
+        'isAuthenticated=${auth.isAuthenticated} role=${auth.role?.value ?? 'null'} '
+        'user=${auth.user?.email ?? 'null'} error=${auth.errorMessage != null}');
     final formCard = AuthFormCard(
       header: const AuthBrandHeader(),
       title: 'Login',

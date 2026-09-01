@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../firebase/firebase_context.dart';
 import '../firebase/firebase_context_provider.dart';
 import '../models/company.dart';
+import '../providers/auth_session_provider.dart';
 import '../services/company_service.dart';
 
 class CompanyProvider extends ChangeNotifier {
@@ -44,6 +45,8 @@ class CompanyProvider extends ChangeNotifier {
     _companyService = CompanyService(context: context);
     _authSub?.cancel();
     _authSub = _context.auth.idTokenChanges().listen((user) {
+      AuthSessionProvider.timingLog(
+          'CompanyProvider SECOND-auth-listener idTokenChanges: user=${user?.email}');
       debugPrint('[CompanyProvider] idTokenChanges: user=${user?.email}');
       if (user != null && _currentCompanyId == null) {
         resolveCompany(user.uid);
@@ -57,6 +60,7 @@ class CompanyProvider extends ChangeNotifier {
   }
 
   Future<void> resolveCompany(String userId) async {
+    AuthSessionProvider.timingLog('CompanyProvider.resolveCompany START uid=$userId');
     debugPrint('[CompanyProvider.resolveCompany] userId=$userId');
     _isLoading = true;
     notifyListeners();
@@ -64,6 +68,8 @@ class CompanyProvider extends ChangeNotifier {
     try {
       final userDoc =
           await _context.firestore.collection('users').doc(userId).get();
+      AuthSessionProvider.timingLog(
+          'CompanyProvider.resolveCompany users/$userId doc read END');
       final companyId = userDoc.data()?['companyId'] as String?;
       debugPrint('[CompanyProvider.resolveCompany] companyId=$companyId');
 

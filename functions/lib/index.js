@@ -9,7 +9,7 @@
  * Test: firebase functions:shell (then call deployTenantRules({tenantProjectId: 'test-123'}))
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.auditOrphanedTenantProjects = exports.registerTenantMember = exports.deleteTenantUser = exports.deleteWorkspace = exports.createTenantProject = exports.setSuperAdminClaim = exports.deployTenantRules = void 0;
+exports.sendFestivalWishes = exports.auditOrphanedTenantProjects = exports.registerTenantMember = exports.deleteTenantUser = exports.deleteWorkspace = exports.createTenantProject = exports.setSuperAdminClaim = exports.deployTenantRules = void 0;
 var deployTenantRules_1 = require("./deployTenantRules");
 Object.defineProperty(exports, "deployTenantRules", { enumerable: true, get: function () { return deployTenantRules_1.deployTenantRules; } });
 var setSuperAdminClaim_1 = require("./setSuperAdminClaim");
@@ -24,4 +24,6 @@ var registerTenantMember_1 = require("./registerTenantMember");
 Object.defineProperty(exports, "registerTenantMember", { enumerable: true, get: function () { return registerTenantMember_1.registerTenantMember; } });
 var auditOrphanedTenantProjects_1 = require("./auditOrphanedTenantProjects");
 Object.defineProperty(exports, "auditOrphanedTenantProjects", { enumerable: true, get: function () { return auditOrphanedTenantProjects_1.auditOrphanedTenantProjects; } });
+var sendFestivalWishes_1 = require("./sendFestivalWishes");
+Object.defineProperty(exports, "sendFestivalWishes", { enumerable: true, get: function () { return sendFestivalWishes_1.sendFestivalWishes; } });
 //# sourceMappingURL=index.js.map

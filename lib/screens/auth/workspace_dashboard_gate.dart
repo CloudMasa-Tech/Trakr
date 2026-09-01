@@ -26,10 +26,13 @@ class WorkspaceDashboardGate extends StatefulWidget {
 
 class _WorkspaceDashboardGateState extends State<WorkspaceDashboardGate> {
   bool _urlChecked = false;
+  int _buildCount = 0;
 
   @override
   void initState() {
     super.initState();
+    AuthSessionProvider.timingLog(
+        'WorkspaceDashboardGate.initState slug=${widget.workspaceSlug}');
     WidgetsBinding.instance.addPostFrameCallback((_) => _reconcileUrl());
   }
 
@@ -43,6 +46,9 @@ class _WorkspaceDashboardGateState extends State<WorkspaceDashboardGate> {
 
     final slug = auth.workspaceSlug;
     if (slug != null && slug.isNotEmpty && slug != widget.workspaceSlug) {
+      AuthSessionProvider.timingLog(
+          'WorkspaceDashboardGate.reconcileUrl -> context.go(/workspace/$slug/dashboard) '
+          '(widget slug ${widget.workspaceSlug} stale)');
       context.go('/workspace/$slug/dashboard');
     }
   }
@@ -50,6 +56,12 @@ class _WorkspaceDashboardGateState extends State<WorkspaceDashboardGate> {
   @override
   Widget build(BuildContext context) {
     final auth = context.watch<AuthSessionProvider>();
+    _buildCount++;
+    AuthSessionProvider.timingLog(
+        'WorkspaceDashboardGate.build #$_buildCount slug=${widget.workspaceSlug} | '
+        'isLoading=${auth.isLoading} isAuthenticated=${auth.isAuthenticated} '
+        'role=${auth.role?.value ?? 'null'} user=${auth.user?.uid ?? 'null'} '
+        'error=${auth.errorMessage != null}');
 
     if (auth.isLoading) {
       return const AuthLoadingScreen();
@@ -63,12 +75,16 @@ class _WorkspaceDashboardGateState extends State<WorkspaceDashboardGate> {
     }
 
     if (!auth.isAuthenticated || auth.role == null) {
+      AuthSessionProvider.timingLog(
+          'WorkspaceDashboardGate.build -> back to LoginScreen (not authed/role null)');
       if (kIsWeb) {
         return const LandingPage();
       }
       return const LoginScreen();
     }
 
+    AuthSessionProvider.timingLog(
+        'WorkspaceDashboardGate.build -> rendering homeForRole=${auth.role!.value} (dashboard shell build)');
     return RoleRouter.homeForRole(auth.role!, auth.signOut);
   }
 }

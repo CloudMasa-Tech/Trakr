@@ -29,42 +29,37 @@ GoRouter buildAppRouter(AuthSessionProvider auth) {
     redirect: (context, state) {
       final path = state.uri.path;
 
-      // While the session is being restored/validated, let the screens render
-      // their own loading state instead of redirecting mid-restore.
-      if (auth.isLoading) return null;
-
-      if (path.startsWith('/workspace/')) {
-        // Tenant dashboard deep links require a signed-in, non-super-admin user.
-        if (!auth.isAuthenticated || auth.role == null) {
-          return '/';
-        }
-        if (auth.role == AppUserRole.superAdmin) {
-          return '/';
-        }
-        final slug = auth.workspaceSlug;
-        if (slug != null && slug.isNotEmpty) {
-          final requestedSlug = _slugFromPath(path);
-          if (requestedSlug != slug) {
-            return '/workspace/$slug/dashboard';
+      String? resolveRedirect() {
+        if (auth.isLoading) return null;
+        if (path.startsWith('/workspace/')) {
+          // Tenant dashboard deep links require a signed-in, non-super-admin user.
+          if (!auth.isAuthenticated || auth.role == null) return '/';
+          if (auth.role == AppUserRole.superAdmin) return '/';
+          final slug = auth.workspaceSlug;
+          if (slug != null && slug.isNotEmpty) {
+            final requestedSlug = _slugFromPath(path);
+            if (requestedSlug != slug) return '/workspace/$slug/dashboard';
           }
+          return null;
+        }
+        if (path == '/' &&
+            auth.isAuthenticated &&
+            auth.role != null &&
+            auth.role != AppUserRole.superAdmin) {
+          final slug = auth.workspaceSlug;
+          if (slug != null && slug.isNotEmpty) return '/workspace/$slug/dashboard';
         }
         return null;
       }
 
-      // A signed-in tenant user always lands on their own workspace dashboard
-      // URL so the address bar reflects the workspace (e.g.
-      // `/workspace/cloudmasa-innovation-lab/dashboard`).
-      if (path == '/' &&
-          auth.isAuthenticated &&
-          auth.role != null &&
-          auth.role != AppUserRole.superAdmin) {
-        final slug = auth.workspaceSlug;
-        if (slug != null && slug.isNotEmpty) {
-          return '/workspace/$slug/dashboard';
-        }
-      }
+      final resolved = resolveRedirect();
+      AuthSessionProvider.timingLog(
+          'GoRouter.redirect path=$path | '
+          'isAuthenticated=${auth.isAuthenticated} role=${auth.role?.value ?? 'null'} '
+          'isLoading=${auth.isLoading} slug=${auth.workspaceSlug ?? 'null'} | '
+          'decided=${resolved ?? 'null'}');
 
-      return null;
+      return resolved;
     },
     routes: [
       GoRoute(

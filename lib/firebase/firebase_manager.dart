@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import '../firebase_options.dart';
 import 'firebase_context.dart';
 import 'firebase_context_provider.dart';
+import '../providers/auth_session_provider.dart';
 
 /// Resolves the platform-specific [FirebaseOptions] for a given workspace id.
 ///
@@ -125,6 +126,20 @@ class FirebaseManager {
     return Firebase.app();
   }
 
+  /// LOGIN TIMING (diagnostic only): logs elapsed ms since the login-anchor
+  /// (stamped by `AuthSessionProvider.markLoginStart` on "Sign in" tap) under
+  /// the [LOGIN_TIMING] tag, so app create/reuse time shows against the same
+  /// timeline used across the rest of the login chain.
+  static void _t(String label) {
+    final anchor = AuthSessionProvider.loginAnchor;
+    final elapsed = anchor == null
+        ? null
+        : DateTime.now().difference(anchor).inMilliseconds;
+    debugPrint(
+        '[LOGIN_TIMING] ${elapsed == null ? '(no-anchor) ' : ''}'
+        '$label${elapsed == null ? '' : ' | elapsed=${elapsed}ms'}');
+  }
+
   /// Initializes the named [FirebaseApp] for [workspaceId] and caches it.
   ///
   /// Idempotent: returns the already-initialized app when one exists for the
@@ -159,6 +174,7 @@ class FirebaseManager {
       // No config was requested — reuse any app already bound to the workspace.
       final cached = _apps[workspaceId];
       if (cached != null) {
+        _t('initializeTenantApp REUSING tracked app "$workspaceId"');
         debugPrint(
           'FirebaseManager.initializeTenantApp: REUSING tracked app '
           '"$workspaceId" (project ${cached.options.projectId})',
@@ -168,6 +184,7 @@ class FirebaseManager {
       final existing = Firebase.apps.where((app) => app.name == workspaceId);
       if (existing.isNotEmpty) {
         final app = existing.first;
+        _t('initializeTenantApp adopting UNTRACKED (reused) app "$workspaceId"');
         debugPrint(
           'FirebaseManager.initializeTenantApp: adopting UNTRACKED app '
           '"$workspaceId" (no options provided to verify it — caller beware)',
@@ -175,6 +192,7 @@ class FirebaseManager {
         _apps[workspaceId] = app;
         return app;
       }
+      _t('initializeTenantApp CREATING NEW app "$workspaceId"');
       debugPrint(
         'FirebaseManager.initializeTenantApp: creating NEW app "$workspaceId"',
       );
@@ -191,12 +209,14 @@ class FirebaseManager {
     final cached = _apps[workspaceId];
     if (cached != null) {
       if (_sameProject(cached.options, options)) {
+        _t('initializeTenantApp REUSING tracked app "$workspaceId" (same project)');
         debugPrint(
           'FirebaseManager.initializeTenantApp: REUSING tracked app '
           '"$workspaceId" (project ${cached.options.projectId})',
         );
         return cached;
       }
+      _t('initializeTenantApp REPLACING stale app "$workspaceId" (different project)');
       debugPrint(
         'FirebaseManager.initializeTenantApp: tracked app "$workspaceId" is '
         'bound to a different project than requested — replacing',
@@ -234,6 +254,7 @@ class FirebaseManager {
       'FirebaseManager.initializeTenantApp: creating NEW app "$workspaceId" '
       '(project ${options.projectId})',
     );
+    _t('initializeTenantApp CREATING NEW app "$workspaceId" (project ${options.projectId})');
     return _initialize(workspaceId: workspaceId, options: options);
   }
 

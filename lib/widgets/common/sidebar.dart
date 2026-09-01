@@ -35,7 +35,8 @@ class _SidebarState extends State<Sidebar> {
   static const _attendanceSection = 'ATTENDANCE MONITOR';
   static const _payrollSection = 'PAYROLL';
   static const _directorySection = 'DIRECTORY & ACCESS';
-  static const _systemSection = 'SYSTEM CONFIGURATION';
+  static const _appSettingSection = 'APP SETTING';
+  static const _profileSettingSection = 'PROFILE SETTING';
 
   late final Set<String> _expandedSections;
 
@@ -73,8 +74,12 @@ class _SidebarState extends State<Sidebar> {
       case 15:
       case 16:
         return _directorySection;
+      case 5:
+        return _profileSettingSection;
       case 7:
-        return _systemSection;
+      case 8:
+      case 9:
+        return _appSettingSection;
       default:
         return null;
     }
@@ -320,16 +325,28 @@ class _SidebarState extends State<Sidebar> {
                 ),
 
                 const SizedBox(height: 14),
-                // ── SYSTEM CONFIGURATION ────────────────────────────────
-                _sectionHeader(context, _systemSection),
+                // ── APP SETTING ───────────────────────────────────────────
+                _sectionHeader(context, _appSettingSection),
                 _CollapsibleSectionGroup(
-                  expanded: _expandedSections.contains(_systemSection),
+                  expanded: _expandedSections.contains(_appSettingSection),
                   children: [
                     _SidebarItem(
                         index: 7,
                         selectedIndex: widget.selectedIndex,
                         icon: Icons.settings_outlined,
-                        label: 'Settings',
+                        label: 'Geo-Fencing Setup',
+                        onTap: widget.onItemSelected),
+                    _SidebarItem(
+                        index: 8,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.calendar_today_outlined,
+                        label: 'Weekoff / Holiday Setup',
+                        onTap: widget.onItemSelected),
+                    _SidebarItem(
+                        index: 9,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.celebration_outlined,
+                        label: 'Festival Setting',
                         onTap: widget.onItemSelected),
                   ],
                 ),
@@ -345,6 +362,21 @@ class _SidebarState extends State<Sidebar> {
                       ],
                     ),
                   ),
+                ),
+
+                const SizedBox(height: 14),
+                // ── PROFILE SETTING ───────────────────────────────────────
+                _sectionHeader(context, _profileSettingSection),
+                _CollapsibleSectionGroup(
+                  expanded: _expandedSections.contains(_profileSettingSection),
+                  children: [
+                    _SidebarItem(
+                        index: 5,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.person_outline_rounded,
+                        label: 'Profile Setting',
+                        onTap: widget.onItemSelected),
+                  ],
                 ),
                 const SizedBox(height: 20),
                 if (widget.onLogout != null)

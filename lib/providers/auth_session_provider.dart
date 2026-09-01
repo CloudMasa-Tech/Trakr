@@ -110,6 +110,43 @@ class AuthSessionProvider extends ChangeNotifier {
   /// `idTokenChanges` listener) so the session role is resolved only once.
   String? _resolvingUid;
 
+  /// ---- LOGIN TIMING INSTRUMENTATION (diagnostic only, no logic change) ----
+  ///
+  /// A wall-clock anchor stamped when the user taps "Sign in". Every boundary
+  /// in the login chain logs elapsed time since this anchor via `_t(...)`, so
+  /// both per-step duration (two adjacent `_t` lines) and cumulative time since
+  /// submit (the `elapsed=` value) are visible in the console at a glance.
+  /// Tag: [LOGIN_TIMING].
+  static DateTime? _loginAnchor;
+
+  /// Exposes the login-timing anchor so external files (e.g.
+  /// `FirebaseManager`) can report elapsed time since "Sign in" was tapped
+  /// using the same [LOGIN_TIMING] tag.
+  static DateTime? get loginAnchor => _loginAnchor;
+
+  /// Public variant of [_t] so non-provider files (e.g. the login screen's
+  /// navigation step) can log a [LOGIN_TIMING] boundary against the same anchor.
+  static void timingLog(String label) => _t(label);
+
+  /// Resets the login-timing anchor. Call exactly once at the moment the user
+  /// taps "Sign in". Subsequent `_t(...)` calls report ms since this anchor.
+  static void markLoginStart() {
+    _loginAnchor = DateTime.now();
+    debugPrint('[LOGIN_TIMING] sign-in tapped (anchor reset)');
+  }
+
+  /// Logs a timing boundary labelled [label] with elapsed ms since the last
+  /// [markLoginStart]. Cumulative, not per-step, so callers can diff two
+  /// adjacent lines to get the step duration while reading total time directly.
+  static void _t(String label) {
+    final anchor = _loginAnchor;
+    final elapsed =
+        anchor == null ? null : DateTime.now().difference(anchor).inMilliseconds;
+    debugPrint(
+        '[LOGIN_TIMING] ${elapsed == null ? '(no-anchor) ' : ''}$label'
+        '${elapsed == null ? '' : ' | elapsed=${elapsed}ms'}');
+  }
+
   late FirebaseContext _context;
 
   /// The tenant workspace the current session is bound to (set during
@@ -297,6 +334,8 @@ class AuthSessionProvider extends ChangeNotifier {
   /// retry, watchdog) do not.
   Future<void> _handleStreamEmission(User? user) {
     _rawEmissionCounter++;
+    _t('idTokenChanges emission #$_rawEmissionCounter '
+        'user=${user?.email ?? '(null)'}');
     debugPrint(
         '[AuthSessionProvider.RAW idTokenChanges] emission #$_rawEmissionCounter '
         'user=${user?.email ?? '(null)'} uid=${user?.uid ?? '(none)'} '
@@ -313,6 +352,7 @@ class AuthSessionProvider extends ChangeNotifier {
         '[AuthSessionProvider._handleAuthChanged] INVOKED user=${user?.email ?? '(null)'} '
         'uid=${user?.uid ?? '(none)'} app=${_context.app.name} '
         'auth.currentUser=${_auth.currentUser?.email ?? '(none)'}');
+    _t('_handleAuthChanged INVOKED user=${user?.email ?? '(null)'}');
     _user = user;
 
     if (user == null) {
@@ -414,7 +454,9 @@ class AuthSessionProvider extends ChangeNotifier {
         ControlPlaneFirebase.instance.firestore);
 
     _authRestoreTimer?.cancel();
+    _t('_loadLocallyCachedRole START');
     final locallyCachedRole = await _loadLocallyCachedRole(user.uid);
+    _t('_loadLocallyCachedRole END');
     // Only trust the local role cache for regular users. Admin/super-admin
     // roles are always re-validated against Firestore so role changes (e.g. a
     // company admin promoted to super admin) take effect on the next launch.
@@ -422,6 +464,7 @@ class AuthSessionProvider extends ChangeNotifier {
         locallyCachedRole != null &&
         locallyCachedRole == AppUserRole.employee;
     if (canUseCachedSession) {
+      _t('CACHE HIT — using locally cached employee role, skipping _loadRole');
       debugPrint(
           '[AuthSessionProvider._handleAuthChanged] using cached role: ${locallyCachedRole.value}');
       _errorMessage = null;
@@ -438,14 +481,17 @@ class AuthSessionProvider extends ChangeNotifier {
     try {
       debugPrint(
           '[AuthSessionProvider._handleAuthChanged] calling _loadRole (timeout 20s)');
+      _t('_loadRole START (timeout 20s)');
       final role = await _loadRole(user.uid).timeout(
         const Duration(seconds: 20),
         onTimeout: () {
+          _t('_loadRole TIMED OUT after 20s');
           debugPrint(
               '[AuthSessionProvider._handleAuthChanged] _loadRole TIMED OUT after 20s');
           throw TimeoutException('Role resolution timed out');
         },
       );
+      _t('_loadRole END: ${role?.value}');
       debugPrint(
           '[AuthSessionProvider._handleAuthChanged] _loadRole returned: ${role?.value}');
       if (!_isCurrentAuthChange(authChangeVersion, user)) {
@@ -715,6 +761,7 @@ class AuthSessionProvider extends ChangeNotifier {
 
   Future<AppUserRole?> _loadRole(String uid) async {
     debugPrint('[AuthSessionProvider._loadRole] uid=$uid');
+    _t('_loadRole#enter uid=$uid');
 
     User? user;
     Map<String, dynamic>? data;
@@ -726,6 +773,8 @@ class AuthSessionProvider extends ChangeNotifier {
             '[AuthSessionProvider._loadRole] attempt $attempt/$_roleReadMaxAttempts '
             '(backoff ${_roleReadBackoff[attempt - 2].inMilliseconds}ms + '
             'forced token refresh)');
+        _t('_loadRole ATTEMPT $attempt/$_roleReadMaxAttempts START '
+            '(backoff ${_roleReadBackoff[attempt - 2].inMilliseconds}ms + token refresh)');
         // Force a fresh ID token so any custom claims (tenant id, role) that a
         // Cloud Function just finished setting are picked up, and so the
         // Firestore rules always evaluate against the newest claims. This
@@ -744,9 +793,13 @@ class AuthSessionProvider extends ChangeNotifier {
               '(non-fatal): $e');
         }
         await Future<void>.delayed(_roleReadBackoff[attempt - 2]);
+        _t('_loadRole ATTEMPT $attempt/$_roleReadMaxAttempts END of backoff/token-refresh');
+      } else {
+        _t('_loadRole ATTEMPT $attempt/$_roleReadMaxAttempts START (no backoff)');
       }
 
       try {
+        _t('_loadRole ATTEMPT $attempt users/$uid doc read START');
         final snapshot = await _firestore
             .collection('users')
             .doc(uid)
@@ -754,12 +807,15 @@ class AuthSessionProvider extends ChangeNotifier {
             .timeout(
               const Duration(seconds: 10),
               onTimeout: () {
+                _t('_loadRole ATTEMPT $attempt users doc read TIMED OUT (10s)');
                 debugPrint(
                     '[AuthSessionProvider._loadRole] TIMEOUT reading users doc '
                     '(attempt $attempt)');
                 throw TimeoutException('Role resolution timed out reading users doc');
               },
             );
+        _t('_loadRole ATTEMPT $attempt users/$uid doc read END '
+            '(exists=${snapshot.exists})');
         user = _auth.currentUser;
         data = snapshot.data();
         docExists = snapshot.exists;
@@ -770,6 +826,7 @@ class AuthSessionProvider extends ChangeNotifier {
           // The doc exists but the role isn't readable/interpretable yet — it
           // may have just been written by an invite that is still propagating,
           // or the caller's token predates the write. Retry rather than bailing.
+          _t('_loadRole ATTEMPT $attempt role not resolvable, will retry');
           debugPrint(
               '[AuthSessionProvider._loadRole] role not yet resolvable '
               '(doc exists=${snapshot.exists}, data=$data), will retry');
@@ -777,6 +834,7 @@ class AuthSessionProvider extends ChangeNotifier {
         }
       } on FirebaseException catch (e) {
         lastError = e;
+        _t('_loadRole ATTEMPT $attempt Firestore error: ${e.code}');
         debugPrint(
             '[AuthSessionProvider._loadRole] Firestore error reading users/$uid '
             '(attempt $attempt): code=${e.code}, message=${e.message}');
@@ -791,6 +849,7 @@ class AuthSessionProvider extends ChangeNotifier {
       } on TimeoutException {
         lastError = TimeoutException('Role resolution timed out reading users doc');
         if (attempt < _roleReadMaxAttempts) continue;
+        _t('_loadRole attempts exhausted on TIMEOUT after $_roleReadMaxAttempts');
         debugPrint(
             '[AuthSessionProvider._loadRole] TIMEOUT exhausted after '
             '$_roleReadMaxAttempts attempts');
@@ -815,13 +874,7 @@ class AuthSessionProvider extends ChangeNotifier {
         '[AuthSessionProvider._loadRole] storedRole from users doc: ${data?['role']} -> ${storedRole?.value}');
 
     if (storedRole != null) {
-      // The signed-in user's `users/{uid}.role` document is the authoritative
-      // source of truth for the session role, including `super_admin`, which is
-      // pinned to the authenticated account by `_guardSuperAdminActive`. No
-      // extra directory lookup is required. (A previous version also demanded
-      // an `admins` directory match on top of the users doc, which made the
-      // Super Admin login fail whenever that lookup came back empty on the
-      // Master project.)
+      _t('_loadRole returning AUTHORITATIVE stored role: ${storedRole.value}');
       debugPrint(
           '[AuthSessionProvider._loadRole] returning stored role: ${storedRole.value}');
       return storedRole;
@@ -829,14 +882,14 @@ class AuthSessionProvider extends ChangeNotifier {
 
     debugPrint(
         '[AuthSessionProvider._loadRole] no stored role, inferring from directory');
+    _t('_inferRoleFromDirectory START (no users-role, sequential reads follow)');
 
     final inferredRole = await _inferRoleFromDirectory(
       email: user.email,
       phone: user.phoneNumber,
       allowAuthenticatedAdminFallback: true,
     );
-    debugPrint(
-        '[AuthSessionProvider._loadRole] inferredRole: ${inferredRole?.value}');
+    _t('_inferRoleFromDirectory END: ${inferredRole?.value}');
 
     if (inferredRole != null) {
       debugPrint(
@@ -879,43 +932,56 @@ class AuthSessionProvider extends ChangeNotifier {
     }
 
     if (normalizedEmail.isNotEmpty) {
+      _t('dir-read #1 managers.where(email).limit(1) START');
       final exactManager = await _firestore
           .collection('managers')
           .where('email', isEqualTo: normalizedEmail)
           .limit(1)
           .get();
+      _t('dir-read #1 managers.where(email) END (docs=${exactManager.docs.length})');
       if (exactManager.docs.isNotEmpty) return AppUserRole.manager;
 
+      _t('dir-read #2 staff.where(email).limit(1) START');
       final exactStaff = await _firestore
           .collection('staff')
           .where('email', isEqualTo: normalizedEmail)
           .limit(1)
           .get();
+      _t('dir-read #2 staff.where(email) END (docs=${exactStaff.docs.length})');
       if (exactStaff.docs.isNotEmpty) return AppUserRole.employee;
 
+      _t('dir-read #3 _isAuthorizedAdminDirectoryEmail START (admin resolution)');
       if (await _isAuthorizedAdminDirectoryEmail(normalizedEmail)) {
+        _t('dir-read #3a admin directory matched -> admin');
         return AppUserRole.admin;
       }
+      _t('dir-read #3b _isAuthorizedAdminDirectoryEmail no match');
     }
 
     if (normalizedPhone.isNotEmpty) {
+      _t('dir-read #4 managers.where(phone).limit(1) START');
       final exactManager = await _firestore
           .collection('managers')
           .where('phone', isEqualTo: normalizedPhone)
           .limit(1)
           .get();
+      _t('dir-read #4 managers.where(phone) END');
       if (exactManager.docs.isNotEmpty) return AppUserRole.manager;
 
+      _t('dir-read #5 staff.where(phone).limit(1) START');
       final exactStaff = await _firestore
           .collection('staff')
           .where('phone', isEqualTo: normalizedPhone)
           .limit(1)
           .get();
+      _t('dir-read #5 staff.where(phone) END');
       if (exactStaff.docs.isNotEmpty) return AppUserRole.employee;
     }
 
+    _t('dir-read #6 managers.limit(100).get() START');
     final managerSnapshot =
         await _firestore.collection('managers').limit(100).get();
+    _t('dir-read #6 managers.limit(100).get() END (docs=${managerSnapshot.docs.length})');
     for (final doc in managerSnapshot.docs) {
       final docEmail =
           (doc.data()['email'] as String? ?? '').trim().toLowerCase();
@@ -928,7 +994,9 @@ class AuthSessionProvider extends ChangeNotifier {
       }
     }
 
+    _t('dir-read #7 staff.limit(200).get() START');
     final staffSnapshot = await _firestore.collection('staff').limit(200).get();
+    _t('dir-read #7 staff.limit(200).get() END (docs=${staffSnapshot.docs.length})');
     for (final doc in staffSnapshot.docs) {
       final docEmail =
           (doc.data()['email'] as String? ?? '').trim().toLowerCase();
@@ -941,10 +1009,13 @@ class AuthSessionProvider extends ChangeNotifier {
       }
     }
 
+    _t('dir-read #8 _isSignedInAuthUserAdminFallback START (admin fallback)');
     if (allowAuthenticatedAdminFallback &&
         await _isSignedInAuthUserAdminFallback(normalizedEmail)) {
+      _t('dir-read #8a admin fallback matched -> admin');
       return AppUserRole.admin;
     }
+    _t('dir-read #8b admin fallback no match');
 
     return null;
   }
@@ -1021,6 +1092,7 @@ Future<void> signIn({
     required String email,
     required String password,
   }) async {
+    _t('signIn() entered (email=$email)');
     debugPrint('[AuthSessionProvider.signIn] email=$email');
 
     _setLoading(true);
@@ -1030,8 +1102,10 @@ Future<void> signIn({
       final normalizedEmail = email.trim().toLowerCase();
       debugPrint(
           '[AuthSessionProvider.signIn] resolving workspace for $normalizedEmail');
+      _t('workspace resolve START');
       final resolution =
           await LoginWorkspaceResolverService.instance.resolve(normalizedEmail);
+      _t('workspace resolve END: ${resolution.kind}');
 
       bool authenticatedOnTenant = false;
       if (resolution.isSuperAdmin) {
@@ -1043,8 +1117,10 @@ Future<void> signIn({
         _workspace = workspace;
         debugPrint(
             '[AuthSessionProvider.signIn] tenant ${workspace.workspaceId} -> activating');
+        _t('tenant app create/reuse START (workspace ${workspace.workspaceId})');
         final tenantContext =
             await TenantBootstrapService.instance.bootstrap(workspace);
+        _t('tenant app create/reuse END');
         setContext(tenantContext);
         authenticatedOnTenant = true;
       } else if (resolution.isUnavailable) {
@@ -1077,7 +1153,9 @@ Future<void> signIn({
             debugPrint(
                 '[AuthSessionProvider.signIn] clearing previous tenant auth '
                 'session (${previous.email}) before re-auth on reused app');
+            _t('forced pre-auth signOut START (${previous.email})');
             await _auth.signOut();
+            _t('forced pre-auth signOut END');
           }
         } catch (e) {
           debugPrint(
@@ -1093,10 +1171,12 @@ Future<void> signIn({
 
       debugPrint(
           '[AuthSessionProvider.signIn] calling signInWithEmailAndPassword');
+      _t('signInWithEmailAndPassword START');
       final credential = await _auth.signInWithEmailAndPassword(
         email: normalizedEmail,
         password: password,
       );
+      _t('signInWithEmailAndPassword END');
 
       final user = credential.user;
       if (user == null) {
@@ -1113,6 +1193,7 @@ Future<void> signIn({
       _signInWatchdog = Timer(const Duration(milliseconds: 2500), () {
         final current = _auth.currentUser;
         if (_role == null && current != null && current.uid == user.uid) {
+          _t('WATCHDOG fired (2.5s, no stream emission; raw counter=$_rawEmissionCounter)');
           debugPrint(
               '[AuthSessionProvider.signIn] no auth-stream emission within '
               '2.5s of successful sign-in (uid=${user.uid}, raw counter='
@@ -1124,6 +1205,7 @@ Future<void> signIn({
 
       debugPrint(
           '[AuthSessionProvider.signIn] Firebase auth success, waiting for _handleAuthChanged');
+      _t('waiting on pendingAuth completer (role resolve) START');
       if (pendingAuth != null && !pendingAuth.isCompleted) {
         await pendingAuth.future.timeout(
           const Duration(seconds: 30),
@@ -1134,6 +1216,7 @@ Future<void> signIn({
           },
         );
       }
+      _t('pendingAuth completer resolved');
       _signInWatchdog?.cancel();
 
       debugPrint(
@@ -1463,6 +1546,7 @@ Future<void> signIn({
       return false;
     }
 
+    _t('admin-fallback admin doc WRITE (create admins/uid)');
     try {
       await _firestore.collection('admins').doc(currentUser.uid).set({
         'name': currentUser.displayName ??
@@ -1491,14 +1575,18 @@ Future<void> signIn({
     required String email,
   }) async {
     try {
+      _t('admin-fallback $collection.where(email).limit(1) START');
       final exactEmail = await _firestore
           .collection(collection)
           .where('email', isEqualTo: email)
           .limit(1)
           .get();
+      _t('admin-fallback $collection.where(email) END (docs=${exactEmail.docs.length})');
       if (exactEmail.docs.isNotEmpty) return true;
 
+      _t('admin-fallback $collection.limit(200).get() START');
       final docs = await _firestore.collection(collection).limit(200).get();
+      _t('admin-fallback $collection.limit(200).get() END (docs=${docs.docs.length})');
       for (final doc in docs.docs) {
         if (_recordEmailMatches(doc.data(), email)) return true;
       }
@@ -1514,17 +1602,21 @@ Future<void> signIn({
     if (normalizedEmail.isEmpty) return false;
 
     try {
+      _t('admin-dir-read #1 admins.where(email).limit(1) START');
       final exactAdmin = await _firestore
           .collection('admins')
           .where('email', isEqualTo: normalizedEmail)
           .limit(1)
           .get();
+      _t('admin-dir-read #1 admins.where(email) END (docs=${exactAdmin.docs.length})');
       if (exactAdmin.docs
           .any((doc) => _isActiveAdminDirectoryData(doc.data()))) {
         return true;
       }
 
+      _t('admin-dir-read #2 admins.limit(100).get() START');
       final admins = await _firestore.collection('admins').limit(100).get();
+      _t('admin-dir-read #2 admins.limit(100).get() END (docs=${admins.docs.length})');
       for (final doc in admins.docs) {
         final data = doc.data();
         if (_recordEmailMatches(data, normalizedEmail) &&
@@ -1537,17 +1629,21 @@ Future<void> signIn({
     }
 
     try {
+      _t('admin-dir-read #3 users.where(email).limit(1) START');
       final exactUser = await _firestore
           .collection('users')
           .where('email', isEqualTo: normalizedEmail)
           .limit(1)
           .get();
+      _t('admin-dir-read #3 users.where(email) END (docs=${exactUser.docs.length})');
       if (exactUser.docs
           .any((doc) => _isActiveAdminDirectoryData(doc.data()))) {
         return true;
       }
 
+      _t('admin-dir-read #4 users.limit(100).get() START');
       final users = await _firestore.collection('users').limit(100).get();
+      _t('admin-dir-read #4 users.limit(100).get() END (docs=${users.docs.length})');
       for (final doc in users.docs) {
         final data = doc.data();
         if (_recordEmailMatches(data, normalizedEmail) &&
@@ -1559,7 +1655,12 @@ Future<void> signIn({
       if (e.code != 'permission-denied') rethrow;
     }
 
-    if (await _isConfiguredAdminEmail(normalizedEmail)) return true;
+    _t('admin-dir-read #5 app_config/admin_access doc read START');
+    if (await _isConfiguredAdminEmail(normalizedEmail)) {
+      _t('admin-dir-read #5 app_config match -> admin');
+      return true;
+    }
+    _t('admin-dir-read #5 app_config no match');
 
     return false;
   }

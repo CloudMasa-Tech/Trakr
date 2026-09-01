@@ -104,6 +104,7 @@ flutter_launcher_icons:
     generate: true
   windows:
     generate: true
-  image_path: "assets/trakr00-removebg-preview.png"
+  image_path: "assets/traka00.png"
+  remove_alpha_ios: true
   adaptive_icon_background: "#0A8FF0"
-  adaptive_icon_foreground: "assets/trakr00-removebg-preview.png"
+  adaptive_icon_foreground: "assets/traka00.png"

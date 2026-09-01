@@ -14,4 +14,5 @@ export { deleteWorkspace } from './deleteWorkspace';
 export { deleteTenantUser } from './deleteTenantUser';
 export { registerTenantMember } from './registerTenantMember';
 export { auditOrphanedTenantProjects } from './auditOrphanedTenantProjects';
+export { sendFestivalWishes } from './sendFestivalWishes';
 //# sourceMappingURL=index.d.ts.map

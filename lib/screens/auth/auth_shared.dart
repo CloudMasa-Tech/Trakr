@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../../providers/auth_session_provider.dart';
 import '../../theme/app_theme_colors.dart';
 import '../../widgets/common/trakr_logo.dart';
 
@@ -176,8 +177,15 @@ class AuthLoadingScreen extends StatelessWidget {
     this.errorMessage,
   });
 
+  static int _buildCount = 0;
+
   @override
   Widget build(BuildContext context) {
+    _buildCount++;
+    AuthSessionProvider.timingLog(
+        'AuthLoadingScreen.build #$_buildCount '
+        'message=${message ?? '(default: Loading your workspace...)'} '
+        'hasError=${errorMessage != null && errorMessage!.trim().isNotEmpty}');
     final status = (message == null || message!.trim().isEmpty)
         ? 'Loading your workspace...'
         : message!;

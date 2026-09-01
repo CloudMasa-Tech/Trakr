@@ -21,6 +21,8 @@ import 'admin/notifications_history_screen.dart';
 import 'admin/team_directory_screen.dart';
 import 'admin/user_roles_screen.dart';
 import 'admin/designations_screen.dart';
+import 'admin/festival_settings_screen.dart';
+import 'admin/profile_setting_screen.dart';
 import 'approve_requests/approve_requests_screen.dart';
 import 'admin/payroll_screen.dart';
 import 'admin/monthly_analysis_screen.dart';
@@ -270,8 +272,14 @@ class _AppShellState extends State<AppShell> {
       case 4:
         return const PayrollScreen();
 
+      case 5:
+        return const ProfileSettingScreen();
       case 7:
         return const _SystemSettingsScreen();
+      case 8:
+        return const WeekendHolidayScreen();
+      case 9:
+        return const FestivalSettingsScreen();
       case 11:
         return const AttendanceHistoryScreen();
       case 12:
@@ -1340,48 +1348,58 @@ class _AppShellState extends State<AppShell> {
         ),
       ),
       builder: (context) {
-        final moreItems = [
-          {
-            'index': 17,
-            'label': 'Approve Requests',
-            'icon': Icons.fact_check_outlined
-          },
-          {
-            'index': 12,
-            'label': 'Manager Activity Log',
-            'icon': Icons.manage_history_rounded
-          },
-          {
-            'index': 13,
-            'label': 'Monthly Analysis',
-            'icon': Icons.analytics_outlined
-          },
-          {
-            'index': 4,
-            'label': 'Payroll & Compensation',
-            'icon': Icons.payments_outlined
-          },
-          {
-            'index': 7,
-            'label': 'Settings',
-            'icon': Icons.settings_outlined
-          },
-          {
-            'index': 14,
-            'label': 'Notifications',
-            'icon': Icons.notifications_outlined
-          },
-          {
-            'index': 15,
-            'label': 'Roles & Permissions',
-            'icon': Icons.admin_panel_settings_outlined
-          },
-          {
-            'index': 16,
-            'label': 'Designations',
-            'icon': Icons.work_outline_rounded
-          },
-        ];
+final moreItems = [
+            {
+              'index': 17,
+              'label': 'Approve Requests',
+              'icon': Icons.fact_check_outlined
+            },
+            {
+              'index': 12,
+              'label': 'Manager Activity Log',
+              'icon': Icons.manage_history_rounded
+            },
+            {
+              'index': 13,
+              'label': 'Monthly Analysis',
+              'icon': Icons.analytics_outlined
+            },
+            {
+              'index': 4,
+              'label': 'Payroll & Compensation',
+              'icon': Icons.payments_outlined
+            },
+            {
+              'index': 7,
+              'label': 'Geo-Fencing Setup',
+              'icon': Icons.settings_outlined
+            },
+            {
+              'index': 8,
+              'label': 'Weekoff / Holiday',
+              'icon': Icons.calendar_today_outlined
+            },
+            {
+              'index': 9,
+              'label': 'Festival Setting',
+              'icon': Icons.celebration_outlined
+            },
+            {
+              'index': 14,
+              'label': 'Notifications',
+              'icon': Icons.notifications_outlined
+            },
+            {
+              'index': 15,
+              'label': 'Roles & Permissions',
+              'icon': Icons.admin_panel_settings_outlined
+            },
+            {
+              'index': 16,
+              'label': 'Designations',
+              'icon': Icons.work_outline_rounded
+            },
+          ];
 
         return SafeArea(
           child: Padding(
