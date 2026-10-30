@@ -8,6 +8,7 @@ import '../../models/staff.dart';
 import '../../services/attendance_service.dart';
 import '../../services/staff_service.dart';
 import '../../theme/app_theme_colors.dart';
+import '../../utils/holiday_helper.dart';
 
 // Fixed-brand palette for the payroll screen (force-dark). Intentional
 // exception: file-scoped brand constants.
@@ -243,9 +244,18 @@ class _PayrollScreenState extends State<PayrollScreen> {
   @override
   Widget build(BuildContext context) {
     return SafeArea(
-      child: StreamBuilder<List<Staff>>(
-        stream: StaffService().getAllStaff(),
-        builder: (context, staffSnapshot) {
+      child: StreamBuilder<DocumentSnapshot>(
+        stream: FirebaseContextProvider.current.firestore
+            .collection('geo_config')
+            .doc('default')
+            .snapshots(),
+        builder: (context, geoSnapshot) {
+          final geoData = geoSnapshot.data?.data() as Map<String, dynamic>?;
+          final holidayDateKeys = HolidayHelper.extractHolidayDateKeys(geoData);
+
+          return StreamBuilder<List<Staff>>(
+            stream: StaffService().getAllStaff(),
+            builder: (context, staffSnapshot) {
           return StreamBuilder<QuerySnapshot>(
             stream: FirebaseContextProvider.current.firestore
                 .collection('managers')
@@ -273,6 +283,7 @@ class _PayrollScreenState extends State<PayrollScreen> {
                         managerSnapshot.data?.docs ?? [],
                         attendanceSnapshot.data ?? [],
                         leaveSnapshot.data,
+                        holidayDateKeys,
                       );
 
                       final filtered = entries.where((entry) {
@@ -347,15 +358,18 @@ class _PayrollScreenState extends State<PayrollScreen> {
             },
           );
         },
-      ),
-    );
-  }
+      );
+    },
+  ),
+);
+}
 
   List<_PayrollEntry> _buildEntries(
     List<Staff> staff,
     List<QueryDocumentSnapshot> managerDocs,
     List<AttendanceModel> attendance,
     QuerySnapshot? leaves,
+    Set<String> holidayDateKeys,
   ) {
     final managers = managerDocs
         .map(_managerDocToStaff)
@@ -383,6 +397,9 @@ class _PayrollScreenState extends State<PayrollScreen> {
       if (record.date.month != _selectedMonth ||
           record.date.year != _selectedYear) {
         continue;
+      }
+      if (holidayDateKeys.contains(record.dateKey)) {
+        continue; // Office holiday: NEVER count as employee absent!
       }
       final entry = entries[record.employeeId];
       if (entry == null) continue;

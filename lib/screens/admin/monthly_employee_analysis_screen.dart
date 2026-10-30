@@ -6,6 +6,7 @@ import '../../models/attendance_model.dart';
 import '../../models/staff.dart';
 import '../../services/attendance_service.dart';
 import '../../theme/app_theme_colors.dart';
+import '../../utils/holiday_helper.dart';
 
 // Fixed-brand palette for the monthly employee analysis screen (force-dark).
 // Intentional exception: file-scoped brand constants.
@@ -90,63 +91,10 @@ class _MonthlyEmployeeAnalysisScreenState
                 .doc('default')
                 .snapshots(),
             builder: (context, geoSnap) {
-              final holidayDateKeys = <String>{};
-              final holidayNames = <String, String>{};
-              bool sundayWorking = false;
-
-              if (geoSnap.hasData && geoSnap.data?.data() != null) {
-                final geoData = geoSnap.data!.data() as Map<String, dynamic>;
-                sundayWorking = geoData['sundayWorking'] as bool? ?? false;
-                final rawDates = geoData['holidayDates'];
-                if (rawDates is List) {
-                  for (var d in rawDates) {
-                    if (d != null && d.toString().trim().isNotEmpty) {
-                      holidayDateKeys.add(d.toString().trim());
-                    }
-                  }
-                }
-                final rawEvents = geoData['holidayEvents'];
-                if (rawEvents is List) {
-                  for (var ev in rawEvents) {
-                    if (ev is Map) {
-                      final dk = ev['dateKey']?.toString().trim();
-                      final name = ev['title']?.toString().trim() ?? 'Holiday';
-                      if (dk != null && dk.isNotEmpty) {
-                        holidayDateKeys.add(dk);
-                        holidayNames[dk] = name;
-                      }
-                    }
-                  }
-                }
-              }
-
-              // Standard official calendar holidays
-              const standardOfficialHolidays = {
-                '2026-01-01': 'New Year',
-                '2026-01-14': 'Pongal',
-                '2026-01-26': 'Republic Day',
-                '2026-03-04': 'Holi',
-                '2026-03-21': 'Eid-ul-Fitr',
-                '2026-03-26': 'Ram Navami',
-                '2026-04-03': 'Good Friday',
-                '2026-04-05': 'Easter',
-                '2026-04-14': 'Tamil New Year',
-                '2026-05-01': 'May Day',
-                '2026-05-27': 'Eid-ul-Zuha',
-                '2026-06-26': 'Muharram',
-                '2026-08-15': 'Independence Day',
-                '2026-08-26': 'Milad-un-Nabi',
-                '2026-09-04': 'Janmashtami',
-                '2026-10-02': 'Gandhi Jayanti',
-                '2026-10-20': 'Dussehra',
-                '2026-11-08': 'Diwali',
-                '2026-11-24': 'Guru Nanak Jayanti',
-                '2026-12-25': 'Christmas',
-              };
-              for (final entry in standardOfficialHolidays.entries) {
-                holidayDateKeys.add(entry.key);
-                holidayNames.putIfAbsent(entry.key, () => entry.value);
-              }
+              final geoData = geoSnap.data?.data() as Map<String, dynamic>?;
+              final sundayWorking = geoData?['sundayWorking'] as bool? ?? false;
+              final holidayDateKeys = HolidayHelper.extractHolidayDateKeys(geoData);
+              final holidayNames = HolidayHelper.extractHolidayNames(geoData);
 
               return StreamBuilder<QuerySnapshot>(
                 stream: FirebaseContextProvider.current.firestore

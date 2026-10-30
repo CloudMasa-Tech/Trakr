@@ -10,6 +10,7 @@ import '../models/attendance_log.dart';
 import '../services/attendance_log_service.dart';
 import '../services/geo_fence_service.dart';
 import '../services/permission_service.dart';
+import '../utils/holiday_helper.dart';
 import 'notification_service.dart';
 
 class AttendanceService {
@@ -935,9 +936,15 @@ class AttendanceService {
       }
     }
 
-    // Filter out absent records whose employee already has a check-in that day
+    // Filter out absent records whose employee already has a check-in that day,
+    // or automated missing records generated on official office holidays.
     return records.where((record) {
       if (record.status != AttendanceStatus.absent) return true;
+      if (HolidayHelper.isOfficeHoliday(record.date) &&
+          (record.id.startsWith('missing_') ||
+              record.policyAction == 'no_check_in_absent')) {
+        return false;
+      }
       final empKey = record.employeeId.trim().toLowerCase();
       final dateKey = _dateKey(record.date);
       return !checkedInKeys.contains('${empKey}_$dateKey');
@@ -1608,7 +1615,21 @@ class AttendanceService {
           .subtract(Duration(days: offset));
       final timeConfig = await _getAttendanceTimeConfig(rawDate);
       if (now.isBefore(timeConfig.checkOutEndTime)) continue;
-      if (!await _isWorkingDate(rawDate)) continue;
+      if (!await _isWorkingDate(rawDate)) {
+        // Office holiday or non-working day: ensure any errant automated missing records are cleaned up
+        final dateKey = _dateKey(rawDate);
+        final errantSnap = await _db
+            .collection('attendance')
+            .where('dateKey', isEqualTo: dateKey)
+            .get();
+        for (final doc in errantSnap.docs) {
+          final data = doc.data();
+          if (doc.id.startsWith('missing_') || data['autoMarkedAbsent'] == true) {
+            await doc.reference.delete();
+          }
+        }
+        continue;
+      }
 
       final dateKey = _dateKey(rawDate);
       final existingSnap = await _db
@@ -1830,16 +1851,7 @@ class AttendanceService {
   Future<bool> _isWorkingDate(DateTime date) async {
     final doc = await _db.collection('geo_config').doc('default').get();
     final data = doc.data() ?? const <String, dynamic>{};
-    final dateKey = _dateKey(date);
-    final holidayDates = (data['holidayDates'] as List<dynamic>? ?? const [])
-        .map((value) => value.toString())
-        .toSet();
-    if (holidayDates.contains(dateKey)) return false;
-
-    final sundayWorking = data['sundayWorking'] as bool? ?? false;
-    if (date.weekday == DateTime.saturday) return true;
-    if (date.weekday == DateTime.sunday) return sundayWorking;
-    return true;
+    return HolidayHelper.isWorkingDate(date, geoConfigData: data);
   }
 
   String _safeDocId(String value) {

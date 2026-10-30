@@ -6,6 +6,7 @@ import '../../models/staff.dart';
 import '../../services/attendance_service.dart';
 import '../../services/staff_service.dart';
 import '../../theme/app_theme_colors.dart';
+import '../../utils/holiday_helper.dart';
 import 'monthly_employee_analysis_screen.dart';
 
 // Fixed-brand palette for the monthly analysis screen (force-dark). Intentional
@@ -192,9 +193,18 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
       child: Container(
         color: Colors.transparent,
         width: double.infinity,
-        child: StreamBuilder<List<Staff>>(
-            stream: StaffService().getAllStaff(),
-            builder: (context, staffSnapshot) {
+        child: StreamBuilder<DocumentSnapshot>(
+          stream: FirebaseContextProvider.current.firestore
+              .collection('geo_config')
+              .doc('default')
+              .snapshots(),
+          builder: (context, geoSnapshot) {
+            final geoData = geoSnapshot.data?.data() as Map<String, dynamic>?;
+            final holidayDateKeys = HolidayHelper.extractHolidayDateKeys(geoData);
+
+            return StreamBuilder<List<Staff>>(
+                stream: StaffService().getAllStaff(),
+                builder: (context, staffSnapshot) {
               return StreamBuilder<QuerySnapshot>(
                 stream: FirebaseContextProvider.current.firestore
                     .collection('managers')
@@ -307,6 +317,13 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
                             for (final entry in employeeDayRecords.entries) {
                               final summary = entry.key;
                               for (final record in entry.value.values) {
+                                final dateKey = record.dateKey;
+                                final isOfficeLeave = holidayDateKeys.contains(dateKey);
+                                if (isOfficeLeave) {
+                                  // Office Leave Day (Company Holiday) - MUST NOT count as absent or employee leave!
+                                  continue;
+                                }
+
                                 if (record.policyAction == 'half_day_leave') {
                                   summary.attendanceLeaveCount += 0.5;
                                 } else if (record.status == AttendanceStatus.leave ||
@@ -573,7 +590,9 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
                   );
                 },
               );
-            }),
+            });
+          },
+        ),
       ),
     );
   }
