@@ -425,6 +425,41 @@ class _QrAttendanceScannerState extends State<QrAttendanceScanner> {
               child: MobileScanner(
                 controller: _scannerController,
                 onDetect: _onBarcodeDetected,
+                errorBuilder: (context, error) {
+                  return Container(
+                    color: Colors.black87,
+                    padding: const EdgeInsets.all(24),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.videocam_off_outlined,
+                              size: 48, color: Colors.orangeAccent),
+                          const SizedBox(height: 12),
+                          Text(
+                            'Camera Unavailable',
+                            style: TextStyle(
+                              color: colors.textPrimary,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 16,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            error.errorCode == MobileScannerErrorCode.permissionDenied
+                                ? 'Camera permission was denied. Please allow camera access in browser/settings or use manual code entry below.'
+                                : 'Could not initialize camera (${error.errorCode.name}). Please use manual entry below.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: colors.textSecondary,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
           ),

@@ -4,7 +4,6 @@ import '../../models/attendance_model.dart';
 import '../../services/attendance_service.dart';
 import '../../theme/app_theme_colors.dart';
 import '../../widgets/dashboard/export_dropdown.dart';
-import '../../widgets/dashboard/holiday_calendar_widget.dart';
 
 class AttendanceHistoryScreen extends StatefulWidget {
   const AttendanceHistoryScreen({super.key});
@@ -15,8 +14,20 @@ class AttendanceHistoryScreen extends StatefulWidget {
 }
 
 class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
-  DateTime _calendarMonth = DateTime.now();
   DateTime? _selectedDate;
+
+  Future<void> _pickDate() async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _selectedDate ?? now,
+      firstDate: DateTime(now.year - 5),
+      lastDate: DateTime(now.year + 1),
+    );
+    if (picked != null) {
+      setState(() => _selectedDate = picked);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,63 +49,13 @@ class _AttendanceHistoryScreenState extends State<AttendanceHistoryScreen> {
                 ),
               ),
               const SizedBox(height: 24),
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  final isMobile = constraints.maxWidth < 1000;
-                  final table = AdminAttendanceHistoryTable(
-                    attendanceService: AttendanceService(),
-                    title: 'Full Attendance History',
-                    emptyMessage: 'No attendance records available yet.',
-                    selectedDate: _selectedDate,
-                  );
-                  final calendar = HolidayCalendarWidget(
-                    visibleMonth: _calendarMonth,
-                    selectedDate: _selectedDate,
-                    onPreviousMonth: () {
-                      setState(() {
-                        _calendarMonth = DateTime(
-                            _calendarMonth.year, _calendarMonth.month - 1);
-                      });
-                    },
-                    onNextMonth: () {
-                      setState(() {
-                        _calendarMonth = DateTime(
-                            _calendarMonth.year, _calendarMonth.month + 1);
-                      });
-                    },
-                    onDateSelected: (date) {
-                      setState(() {
-                        if (_selectedDate != null &&
-                            _selectedDate!.year == date.year &&
-                            _selectedDate!.month == date.month &&
-                            _selectedDate!.day == date.day) {
-                          _selectedDate = null;
-                        } else {
-                          _selectedDate = date;
-                        }
-                      });
-                    },
-                  );
-
-                  if (isMobile) {
-                    return Column(
-                      children: [
-                        calendar,
-                        const SizedBox(height: 24),
-                        table,
-                      ],
-                    );
-                  }
-
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(width: 360, child: calendar),
-                      const SizedBox(width: 24),
-                      Expanded(child: table),
-                    ],
-                  );
-                },
+              AdminAttendanceHistoryTable(
+                attendanceService: AttendanceService(),
+                title: 'Full Attendance History',
+                emptyMessage: 'No attendance records available yet.',
+                selectedDate: _selectedDate,
+                onPickDate: _pickDate,
+                onClearDate: () => setState(() => _selectedDate = null),
               ),
             ],
           ),
@@ -109,6 +70,8 @@ class AdminAttendanceHistoryTable extends StatefulWidget {
   final String title;
   final String emptyMessage;
   final DateTime? selectedDate;
+  final VoidCallback? onPickDate;
+  final VoidCallback? onClearDate;
 
   const AdminAttendanceHistoryTable({
     super.key,
@@ -116,6 +79,8 @@ class AdminAttendanceHistoryTable extends StatefulWidget {
     required this.title,
     required this.emptyMessage,
     this.selectedDate,
+    this.onPickDate,
+    this.onClearDate,
   });
 
   @override
@@ -644,21 +609,47 @@ class _AdminAttendanceHistoryTableState
 
   Widget _dateBadge(DateTime date) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: _AdminHistoryTheme.primary.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Text(
-        DateFormat('dd/MM/yyyy').format(date),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        softWrap: false,
-        style: const TextStyle(
-          color: _AdminHistoryTheme.primary,
-          fontSize: 11,
-          fontWeight: FontWeight.w800,
+        color: _AdminHistoryTheme.primary.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: _AdminHistoryTheme.primary.withValues(alpha: 0.3),
         ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(
+            Icons.event_outlined,
+            size: 14,
+            color: _AdminHistoryTheme.primary,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            DateFormat('dd/MM/yyyy').format(date),
+            style: const TextStyle(
+              color: _AdminHistoryTheme.primary,
+              fontSize: 12,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          if (widget.onClearDate != null) ...[
+            const SizedBox(width: 6),
+            InkWell(
+              onTap: widget.onClearDate,
+              borderRadius: BorderRadius.circular(8),
+              child: const Padding(
+                padding: EdgeInsets.all(2),
+                child: Icon(
+                  Icons.close_rounded,
+                  size: 14,
+                  color: _AdminHistoryTheme.primary,
+                ),
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -674,35 +665,56 @@ class _AdminAttendanceHistoryTableState
       ),
       child: Row(
         mainAxisSize: isMobile ? MainAxisSize.max : MainAxisSize.min,
-        children: ['All', 'Today', 'Weekly', 'Monthly'].map((f) {
-          final isSel = _selectedFilter == f;
-          Widget item = GestureDetector(
-            onTap: () => setState(() => _selectedFilter = f),
-            child: Container(
-              alignment: Alignment.center,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              margin: const EdgeInsets.symmetric(vertical: 4),
-              decoration: BoxDecoration(
-                color: isSel ? _AdminHistoryTheme.primary : Colors.transparent,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                f,
-                style: TextStyle(
-                  color: isSel
-                      ? _AdminHistoryTheme.white
-                      : _AdminHistoryTheme.muted,
-                  fontSize: 12,
-                  fontWeight: isSel ? FontWeight.w700 : FontWeight.w500,
+        children: [
+          ...['All', 'Today', 'Weekly', 'Monthly'].map((f) {
+            final isSel = _selectedFilter == f && widget.selectedDate == null;
+            Widget item = GestureDetector(
+              onTap: () {
+                if (widget.onClearDate != null) {
+                  widget.onClearDate!();
+                }
+                setState(() => _selectedFilter = f);
+              },
+              child: Container(
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                decoration: BoxDecoration(
+                  color: isSel ? _AdminHistoryTheme.primary : Colors.transparent,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  f,
+                  style: TextStyle(
+                    color: isSel
+                        ? _AdminHistoryTheme.white
+                        : _AdminHistoryTheme.muted,
+                    fontSize: 12,
+                    fontWeight: isSel ? FontWeight.w700 : FontWeight.w500,
+                  ),
                 ),
               ),
+            );
+            if (isMobile) {
+              return Expanded(child: item);
+            }
+            return item;
+          }),
+          if (widget.onPickDate != null) ...[
+            const SizedBox(width: 2),
+            IconButton(
+              tooltip: 'Filter by specific date',
+              icon: Icon(
+                Icons.calendar_month_outlined,
+                size: 18,
+                color: widget.selectedDate != null
+                    ? _AdminHistoryTheme.primary
+                    : _AdminHistoryTheme.muted,
+              ),
+              onPressed: widget.onPickDate,
             ),
-          );
-          if (isMobile) {
-            return Expanded(child: item);
-          }
-          return item;
-        }).toList(),
+          ],
+        ],
       ),
     );
   }

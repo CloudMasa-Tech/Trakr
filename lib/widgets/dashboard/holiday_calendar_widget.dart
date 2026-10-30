@@ -363,7 +363,9 @@ class _CalendarDayCell extends StatelessWidget {
         : isFestival
             ? colors.onSecondary
             : isHoliday
-                ? colors.focus
+                ? (holidayColor != null && holidayColor!.computeLuminance() > 0.4
+                    ? const Color(0xFF0F172A)
+                    : Colors.white)
                 : inMonth
                     ? colors.textPrimary
                     : colors.textMuted.withValues(alpha: 0.55);

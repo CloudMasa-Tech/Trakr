@@ -4,7 +4,6 @@ import '../../models/attendance_model.dart';
 import '../../services/attendance_service.dart';
 import '../../theme/app_theme_colors.dart';
 import '../../widgets/dashboard/export_dropdown.dart';
-import '../../widgets/dashboard/holiday_calendar_widget.dart';
 
 class ManagerAttendanceLogScreen extends StatefulWidget {
   const ManagerAttendanceLogScreen({super.key});
@@ -26,8 +25,6 @@ class _ManagerAttendanceLogScreenState
     _searchController.dispose();
     super.dispose();
   }
-
-  DateTime _calendarMonth = DateTime.now();
 
   Future<void> _pickDate() async {
     final now = DateTime.now();
@@ -71,64 +68,18 @@ class _ManagerAttendanceLogScreenState
                 ),
               ),
               const SizedBox(height: 24),
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  final isMobile = constraints.maxWidth < 1000;
-                  final table = _ManagerAttendanceLogTable(
-                    attendanceService: _attendanceService,
-                    selectedDate: _selectedDate,
-                    searchQuery: _searchQuery,
-                    searchController: _searchController,
-                    onSearchChanged: (value) =>
-                        setState(() => _searchQuery = value.trim()),
-                    onClearSearch: () {
-                      _searchController.clear();
-                      setState(() => _searchQuery = '');
-                    },
-                    onPickDate: _pickDate,
-                  );
-
-                  final calendar = HolidayCalendarWidget(
-                    visibleMonth: _calendarMonth,
-                    selectedDate: _selectedDate,
-                    onPreviousMonth: () {
-                      setState(() {
-                        _calendarMonth = DateTime(
-                            _calendarMonth.year, _calendarMonth.month - 1);
-                      });
-                    },
-                    onNextMonth: () {
-                      setState(() {
-                        _calendarMonth = DateTime(
-                            _calendarMonth.year, _calendarMonth.month + 1);
-                      });
-                    },
-                    onDateSelected: (date) {
-                      setState(() {
-                        _selectedDate = date;
-                      });
-                    },
-                  );
-
-                  if (isMobile) {
-                    return Column(
-                      children: [
-                        calendar,
-                        const SizedBox(height: 24),
-                        table,
-                      ],
-                    );
-                  }
-
-                  return Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SizedBox(width: 360, child: calendar),
-                      const SizedBox(width: 24),
-                      Expanded(child: table),
-                    ],
-                  );
+              _ManagerAttendanceLogTable(
+                attendanceService: _attendanceService,
+                selectedDate: _selectedDate,
+                searchQuery: _searchQuery,
+                searchController: _searchController,
+                onSearchChanged: (value) =>
+                    setState(() => _searchQuery = value.trim()),
+                onClearSearch: () {
+                  _searchController.clear();
+                  setState(() => _searchQuery = '');
                 },
+                onPickDate: _pickDate,
               ),
             ],
           ),

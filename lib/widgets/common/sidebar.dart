@@ -64,6 +64,7 @@ class _SidebarState extends State<Sidebar> {
       case 0:
         return _analyticsSection;
       case 11:
+      case 18:
       case 12:
       case 13:
       case 17:
@@ -78,7 +79,6 @@ class _SidebarState extends State<Sidebar> {
         return _profileSettingSection;
       case 7:
       case 8:
-      case 9:
         return _appSettingSection;
       default:
         return null;
@@ -262,6 +262,12 @@ class _SidebarState extends State<Sidebar> {
                         label: 'Attendance Monitoring',
                         onTap: widget.onItemSelected),
                     _SidebarItem(
+                        index: 18,
+                        selectedIndex: widget.selectedIndex,
+                        icon: Icons.calendar_month_rounded,
+                        label: 'Holiday Calendar',
+                        onTap: widget.onItemSelected),
+                    _SidebarItem(
                         index: 12,
                         selectedIndex: widget.selectedIndex,
                         icon: Icons.manage_history_rounded,
@@ -341,12 +347,6 @@ class _SidebarState extends State<Sidebar> {
                         selectedIndex: widget.selectedIndex,
                         icon: Icons.calendar_today_outlined,
                         label: 'Weekoff / Holiday Setup',
-                        onTap: widget.onItemSelected),
-                    _SidebarItem(
-                        index: 9,
-                        selectedIndex: widget.selectedIndex,
-                        icon: Icons.celebration_outlined,
-                        label: 'Festival Setting',
                         onTap: widget.onItemSelected),
                   ],
                 ),

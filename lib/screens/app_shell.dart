@@ -14,6 +14,7 @@ import '../utils/profile_photo_picker.dart';
 import 'dashboard/attendance_dashboard_screen.dart';
 import 'geo_tag/geo_tag_screen.dart';
 import 'admin/attendance_history_screen.dart';
+import 'admin/holiday_calendar_screen.dart';
 import 'admin/manager_attendance_log_screen.dart';
 import 'admin/weekend_holiday_screen.dart';
 import 'admin/notifications_history_screen.dart';
@@ -21,7 +22,6 @@ import 'admin/notifications_history_screen.dart';
 import 'admin/team_directory_screen.dart';
 import 'admin/user_roles_screen.dart';
 import 'admin/designations_screen.dart';
-import 'admin/festival_settings_screen.dart';
 import 'admin/profile_setting_screen.dart';
 import 'approve_requests/approve_requests_screen.dart';
 import 'admin/payroll_screen.dart';
@@ -277,9 +277,8 @@ class _AppShellState extends State<AppShell> {
       case 7:
         return const _SystemSettingsScreen();
       case 8:
-        return const WeekendHolidayScreen();
       case 9:
-        return const FestivalSettingsScreen();
+        return const WeekendHolidayScreen();
       case 11:
         return const AttendanceHistoryScreen();
       case 12:
@@ -294,6 +293,8 @@ class _AppShellState extends State<AppShell> {
         return const DesignationsScreen();
       case 17:
         return const ApproveRequestsScreen(isCompanyWide: true);
+      case 18:
+        return const HolidayCalendarScreen();
       default:
         return const AttendanceDashboardScreen();
     }
@@ -687,12 +688,19 @@ class _AppShellState extends State<AppShell> {
                             doc!['nationality'].toString().isNotEmpty)
                           _buildProfileDetailRow(Icons.flag_outlined,
                               'Nationality', doc['nationality'].toString()),
-                        if (doc?['dob'] is Timestamp)
-                          _buildProfileDetailRow(
+                        if (doc?['dob'] != null)
+                          Builder(builder: (context) {
+                            final rawDob = doc?['dob'];
+                            final date = rawDob is Timestamp
+                                ? rawDob.toDate()
+                                : (rawDob is String ? DateTime.tryParse(rawDob) : null);
+                            if (date == null) return const SizedBox.shrink();
+                            return _buildProfileDetailRow(
                               Icons.cake_outlined,
                               'Date of Birth',
-                              DateFormat('dd MMM yyyy')
-                                  .format((doc!['dob'] as Timestamp).toDate())),
+                              DateFormat('dd MMM yyyy').format(date),
+                            );
+                          }),
                         if (doc?['address'] != null &&
                             doc!['address'].toString().isNotEmpty)
                           _buildProfileDetailRow(Icons.location_on_outlined,
@@ -1350,6 +1358,11 @@ class _AppShellState extends State<AppShell> {
       builder: (context) {
 final moreItems = [
             {
+              'index': 18,
+              'label': 'Holiday Calendar',
+              'icon': Icons.calendar_month_rounded
+            },
+            {
               'index': 17,
               'label': 'Approve Requests',
               'icon': Icons.fact_check_outlined
@@ -1378,11 +1391,6 @@ final moreItems = [
               'index': 8,
               'label': 'Weekoff / Holiday',
               'icon': Icons.calendar_today_outlined
-            },
-            {
-              'index': 9,
-              'label': 'Festival Setting',
-              'icon': Icons.celebration_outlined
             },
             {
               'index': 14,

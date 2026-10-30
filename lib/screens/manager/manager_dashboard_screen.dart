@@ -1025,7 +1025,7 @@ class _ManagerDashboardScreenState extends State<ManagerDashboardScreen> {
           staff: selectedSummary.staff,
           month: selected.month,
           year: selected.year,
-          totalApprovedLeaves: selectedSummary.totalLeaveCount.round(),
+          totalApprovedLeaves: selectedSummary.totalLeaveCount,
           onBack: () => setState(() => _monthlySelectedRow = null),
         ),
       );

@@ -70,6 +70,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   String? _selectedGender;
   String? _selectedNationality;
   DateTime? _dob;
+  final _dobCtrl = TextEditingController();
   final _addressCtrl = TextEditingController();
 
   DateTime _joinDate = DateTime.now();
@@ -120,6 +121,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     _employeeIdCtrl.dispose();
     _passwordCtrl.dispose();
     _maxStaffCtrl.dispose();
+    _dobCtrl.dispose();
     _addressCtrl.dispose();
     super.dispose();
   }
@@ -284,8 +286,11 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
       _showError('Nationality is required.');
       return;
     }
+    if (_dob == null && _dobCtrl.text.trim().isNotEmpty) {
+      _dob = _parseDOB(_dobCtrl.text.trim());
+    }
     if (_dob == null) {
-      _showError('Please select a date of birth.');
+      _showError('Please select or enter a valid date of birth.');
       return;
     }
     if (_addressCtrl.text.trim().isEmpty) {
@@ -1510,15 +1515,47 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     );
   }
 
+  DateTime? _parseDOB(String text) {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return null;
+    final patterns = [
+      'dd MMM yyyy',
+      'dd/MM/yyyy',
+      'yyyy-MM-dd',
+      'dd-MM-yyyy',
+      'MM/dd/yyyy',
+      'd/M/yyyy',
+      'd-M-yyyy',
+    ];
+    for (final pattern in patterns) {
+      try {
+        return DateFormat(pattern).parseStrict(trimmed);
+      } catch (_) {}
+    }
+    return DateTime.tryParse(trimmed);
+  }
+
   Future<void> _pickDOB() async {
+    final now = DateTime.now();
+    final firstDate = DateTime(1940);
+    final lastDate = DateTime(now.year - 14, now.month, now.day);
+    final fallbackYear = now.year - 22;
+    DateTime initialDate = _dob ?? _parseDOB(_dobCtrl.text.trim()) ?? DateTime(fallbackYear, 1, 1);
+    if (initialDate.isAfter(lastDate)) initialDate = lastDate;
+    if (initialDate.isBefore(firstDate)) initialDate = firstDate;
+
     final picked = await showDatePicker(
       context: context,
-      initialDate: _dob ?? DateTime(1995),
-      firstDate: DateTime(1940),
-      lastDate: DateTime.now().subtract(const Duration(days: 365 * 15)),
+      initialDate: initialDate,
+      firstDate: firstDate,
+      lastDate: lastDate,
+      initialDatePickerMode: DatePickerMode.year,
     );
     if (picked != null) {
-      setState(() => _dob = picked);
+      setState(() {
+        _dob = picked;
+        _dobCtrl.text = DateFormat('dd MMM yyyy').format(picked);
+      });
     }
   }
 
@@ -1528,33 +1565,40 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
       children: [
         _fieldLabel('Date of Birth', required: true),
         const SizedBox(height: 6),
-        InkWell(
-          onTap: _submitting ? null : _pickDOB,
-          borderRadius: BorderRadius.circular(10),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-            decoration: BoxDecoration(
-              color: AppThemeColors.darkCanvas,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: _border),
-            ),
-            child: Row(
-              children: [
-                const Icon(Icons.calendar_today_rounded,
-                    size: 16, color: _subtle),
-                const SizedBox(width: 10),
-                Text(
-                  _dob == null
-                      ? 'Select Date of Birth'
-                      : DateFormat('dd MMM yyyy').format(_dob!),
-                  style: TextStyle(
-                    color: _dob == null ? _subtle : _label,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
+        TextFormField(
+          controller: _dobCtrl,
+          enabled: !_submitting,
+          style: const TextStyle(color: _label, fontSize: 14),
+          cursorColor: _accent,
+          decoration: _inputDecoration('DD/MM/YYYY or select date').copyWith(
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.calendar_today_rounded, size: 18, color: _subtle),
+              onPressed: _submitting ? null : _pickDOB,
+              tooltip: 'Choose Date of Birth',
             ),
           ),
+          onChanged: (val) {
+            final parsed = _parseDOB(val);
+            if (parsed != null) {
+              _dob = parsed;
+            }
+          },
+          validator: (val) {
+            final trimmed = val?.trim() ?? '';
+            if (trimmed.isEmpty) {
+              return 'Date of Birth is required';
+            }
+            final parsed = _parseDOB(trimmed);
+            if (parsed == null) {
+              return 'Enter valid date (e.g. 15/08/1998 or 15 Aug 1998)';
+            }
+            final now = DateTime.now();
+            final minAgeDate = DateTime(now.year - 14, now.month, now.day);
+            if (parsed.isAfter(minAgeDate)) {
+              return 'User must be at least 14 years old';
+            }
+            return null;
+          },
         ),
       ],
     );

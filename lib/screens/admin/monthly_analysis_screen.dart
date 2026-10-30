@@ -26,9 +26,13 @@ class _EmployeeSummary {
   int permissionMinutes = 0;
   double paidLeaveCount = 0;
   double unpaidLeaveCount = 0;
+  double attendanceLeaveCount = 0;
 
   int get totalPendingMinutes => pendingMinutes + permissionMinutes;
-  double get totalLeaveCount => paidLeaveCount + unpaidLeaveCount;
+  double get totalLeaveCount {
+    final reqTotal = paidLeaveCount + unpaidLeaveCount;
+    return reqTotal > attendanceLeaveCount ? reqTotal : attendanceLeaveCount;
+  }
 
   _EmployeeSummary(this.staff);
 }
@@ -79,10 +83,23 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
 
   void _calculateLeavesInMonth(
       _EmployeeSummary summary, QuerySnapshot leaveSnap) {
-    String empId = summary.staff.employeeId;
+    final empId = summary.staff.employeeId.trim().toLowerCase();
+    final staffId = summary.staff.id.trim().toLowerCase();
+    final staffName = summary.staff.name.trim().toLowerCase();
+
     for (var doc in leaveSnap.docs) {
       final data = doc.data() as Map<String, dynamic>;
-      if (data['userId'] == empId || data['employeeId'] == empId) {
+      final status = data['status']?.toString().toLowerCase().trim() ?? '';
+      if (status != 'approved') continue;
+
+      final docEmpId = (data['employeeId']?.toString() ?? '').trim().toLowerCase();
+      final docUserId = (data['userId']?.toString() ?? '').trim().toLowerCase();
+      final docUserName = (data['userName']?.toString() ?? '').trim().toLowerCase();
+
+      final matches = (empId.isNotEmpty && (docEmpId == empId || docUserId == empId)) ||
+          (staffId.isNotEmpty && (docEmpId == staffId || docUserId == staffId)) ||
+          (staffName.isNotEmpty && (docUserName == staffName || docUserName.contains(staffName) || staffName.contains(docUserName)));
+      if (!matches) continue;
         final startTs = data['startDate'] as Timestamp?;
         final endTs = data['endDate'] as Timestamp?;
         if (startTs == null || endTs == null) continue;
@@ -124,7 +141,6 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
         }
       }
     }
-  }
 
   String _formatHoursMinutesSeconds(int totalMinutes) {
     final hours = totalMinutes ~/ 60;
@@ -139,6 +155,12 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
 
   Staff _managerDocToStaff(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
+    DateTime? parseDate(dynamic val) {
+      if (val is Timestamp) return val.toDate();
+      if (val is String && val.isNotEmpty) return DateTime.tryParse(val);
+      return null;
+    }
+
     return Staff(
       id: doc.id,
       name: (data['name'] as String? ?? '').trim(),
@@ -147,19 +169,19 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
       department: (data['department'] as String? ?? '').trim(),
       position: (data['position'] as String? ?? 'Manager').trim(),
       employeeId: (data['employeeId'] as String? ?? '').trim(),
-      joinDate: (data['joinDate'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      joinDate: parseDate(data['joinDate']) ?? DateTime.now(),
       photoUrl: data['photoUrl'] as String?,
       reportsTo: data['reportsTo'] as String?,
       salary:
           data['salary'] != null ? (data['salary'] as num).toDouble() : null,
       role: 'manager',
       isActive: (data['status'] as String? ?? 'active') != 'inactive',
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
-      updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
+      createdAt: parseDate(data['createdAt']),
+      updatedAt: parseDate(data['updatedAt']),
       bloodGroup: data['bloodGroup'] as String?,
       gender: data['gender'] as String?,
       nationality: data['nationality'] as String?,
-      dob: (data['dob'] as Timestamp?)?.toDate(),
+      dob: parseDate(data['dob']),
       address: data['address'] as String?,
     );
   }
@@ -185,7 +207,6 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
                       return StreamBuilder<QuerySnapshot>(
                           stream: FirebaseContextProvider.current.firestore
                               .collection('leave_requests')
-                              .where('status', isEqualTo: 'approved')
                               .snapshots(),
                           builder: (context, leaveSnapshot) {
                             final allStaff = staffSnapshot.data ?? [];
@@ -215,35 +236,95 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
 
                             // Group by employee
                             final Map<String, _EmployeeSummary> summaries = {};
+                            final Map<String, _EmployeeSummary> summaryByIdentifier = {};
+
                             for (var staff in allPeople) {
-                              if (staff.employeeId.trim().isEmpty) continue;
+                              if (staff.employeeId.trim().isEmpty && staff.id.trim().isEmpty) continue;
+                              final key = staff.employeeId.trim().isNotEmpty
+                                  ? staff.employeeId.trim()
+                                  : staff.id.trim();
                               final summary = _EmployeeSummary(staff);
-                              summaries[staff.employeeId] = summary;
+                              summaries[key] = summary;
                               if (allLeaves != null) {
                                 _calculateLeavesInMonth(summary, allLeaves);
                               }
+
+                              void registerId(String? id) {
+                                if (id == null) return;
+                                final trimmed = id.trim();
+                                if (trimmed.isEmpty) return;
+                                summaryByIdentifier[trimmed] = summary;
+                                summaryByIdentifier[trimmed.toLowerCase()] = summary;
+                              }
+
+                              registerId(staff.employeeId);
+                              registerId(staff.id);
+                              registerId(staff.email);
+                              registerId(staff.name);
                             }
 
-                            // Filter records by month/year and aggregate
+                            // Group and deduplicate records by employee and dateKey
+                            final Map<_EmployeeSummary, Map<String, AttendanceModel>> employeeDayRecords = {};
                             for (var record in allRecords) {
                               if (record.date.month != _selectedMonth ||
                                   record.date.year != _selectedYear) {
                                 continue;
                               }
 
-                              final summary = summaries[record.employeeId];
+                              final summary = summaryByIdentifier[record.employeeId] ??
+                                  summaryByIdentifier[record.employeeId.toLowerCase()] ??
+                                  summaryByIdentifier[record.employeeName] ??
+                                  summaryByIdentifier[record.employeeName.toLowerCase()];
                               if (summary == null) continue;
 
-                              if (record.countsAsAbsent) {
-                                summary.absentCount++;
-                              } else if (record.countsAsAttended) {
-                                summary.presentCount++;
-                              }
+                              final dayMap = employeeDayRecords.putIfAbsent(summary, () => {});
+                              final dateKey = record.dateKey;
 
-                              summary.pendingMinutes +=
-                                  record.displayPendingMinutes;
-                              summary.permissionMinutes +=
-                                  record.permissionMinutes;
+                              if (!dayMap.containsKey(dateKey)) {
+                                dayMap[dateKey] = record;
+                              } else {
+                                final existing = dayMap[dateKey]!;
+                                final existingHasCheckIn = existing.checkInTime != null ||
+                                    (existing.status != AttendanceStatus.absent && !existing.countsAsAbsent);
+                                final newHasCheckIn = record.checkInTime != null ||
+                                    (record.status != AttendanceStatus.absent && !record.countsAsAbsent);
+
+                                if (!existingHasCheckIn && newHasCheckIn) {
+                                  dayMap[dateKey] = record;
+                                } else if (existingHasCheckIn && newHasCheckIn) {
+                                  final existingTime =
+                                      existing.checkOutTime ?? existing.checkInTime ?? existing.date;
+                                  final newTime =
+                                      record.checkOutTime ?? record.checkInTime ?? record.date;
+                                  if (newTime.isAfter(existingTime)) {
+                                    dayMap[dateKey] = record;
+                                  }
+                                }
+                              }
+                            }
+
+                            // Filter records by month/year and aggregate
+                            for (final entry in employeeDayRecords.entries) {
+                              final summary = entry.key;
+                              for (final record in entry.value.values) {
+                                if (record.policyAction == 'half_day_leave') {
+                                  summary.attendanceLeaveCount += 0.5;
+                                } else if (record.status == AttendanceStatus.leave ||
+                                    record.policyAction == 'full_day_leave' ||
+                                    (record.policyAction == 'full_day_absent' &&
+                                        record.policyLabel.toLowerCase().contains('leave'))) {
+                                  summary.attendanceLeaveCount += 1.0;
+                                } else if (record.countsAsAbsent) {
+                                  summary.absentCount++;
+                                } else if (record.countsAsAttended) {
+                                  summary.presentCount++;
+                                }
+
+                                summary.pendingMinutes +=
+                                    record.displayPendingMinutes;
+                                summary.permissionMinutes +=
+                                    record.permissionMinutes;
+                              }
                             }
 
                             // Apply Search Filter and remove those with 0 records if desired (but usually we show all staff)
@@ -273,7 +354,7 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
                                 month: _selectedMonth,
                                 year: _selectedYear,
                                 totalApprovedLeaves:
-                                    _selectedSummary!.totalLeaveCount.round(),
+                                    _selectedSummary!.totalLeaveCount,
                                 onBack: () =>
                                     setState(() => _selectedSummary = null),
                               );

@@ -3660,8 +3660,6 @@ class _StaffSidebar extends StatelessWidget {
   final VoidCallback onLogout;
   final String userName;
   final String? designation;
-  @Deprecated('Use designation instead to bypass hot reload constraint')
-  final String? department;
   final String? photoUrl;
   final bool isUploadingPhoto;
   final VoidCallback onUploadPhoto;
@@ -3679,7 +3677,7 @@ class _StaffSidebar extends StatelessWidget {
     required this.onUploadPhoto,
     required this.onRemovePhoto,
     required this.onProfileTap,
-  }) : department = null;
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -3784,8 +3782,6 @@ class _StaffSidebar extends StatelessWidget {
 class _StaffProfileHeader extends StatelessWidget {
   final String userName;
   final String? designation;
-  @Deprecated('Use designation instead to bypass hot reload constraint')
-  final String? department;
   final String? photoUrl;
   final bool isUploadingPhoto;
   final VoidCallback onUploadPhoto;
@@ -3800,7 +3796,7 @@ class _StaffProfileHeader extends StatelessWidget {
     required this.onUploadPhoto,
     required this.onRemovePhoto,
     required this.onProfileTap,
-  }) : department = null;
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -4063,8 +4059,6 @@ class _StaffOverviewDashboard extends StatelessWidget {
   final int present;
   final int late;
   final int absent;
-  @Deprecated('Removed to bypass hot reload constraint')
-  final int? wfh;
   final int total;
   final int workingMinutes;
   final VoidCallback onScanAttendance;
@@ -4090,7 +4084,7 @@ class _StaffOverviewDashboard extends StatelessWidget {
     required this.onPreviousMonth,
     required this.onNextMonth,
     required this.onDateSelected,
-  }) : wfh = null;
+  });
 
   @override
   Widget build(BuildContext context) {

@@ -319,24 +319,57 @@ class AttendanceService {
 
   Stream<List<AttendanceModel>> getAttendanceHistoryStream(
     String employeeId, {
+    List<String>? alternativeIds,
     int? limit = 30,
   }) {
-    if (employeeId.isEmpty) {
+    final candidateIds = <String>{
+      employeeId.trim(),
+      if (alternativeIds != null)
+        ...alternativeIds.map((id) => id.trim()),
+    }..removeWhere((id) => id.isEmpty);
+
+    if (candidateIds.isEmpty) {
       return Stream.value(<AttendanceModel>[]);
     }
 
     // Keep this query staff-scoped but avoid requiring a composite Firestore
     // index for employeeId + date. The small staff result set is sorted locally.
-    final query =
-        _db.collection('attendance').where('employeeId', isEqualTo: employeeId);
+    final Query<Map<String, dynamic>> query;
+    if (candidateIds.length == 1) {
+      query = _db
+          .collection('attendance')
+          .where('employeeId', isEqualTo: candidateIds.first);
+    } else {
+      query = _db
+          .collection('attendance')
+          .where('employeeId', whereIn: candidateIds.take(30).toList());
+    }
 
     return _attendanceRecordsWithLiveOfficeTimes(query, (snap, fromDoc) {
       final Map<String, AttendanceModel> seen = {};
       for (final doc in snap.docs) {
         final record = fromDoc(doc);
-        final key = '${record.employeeId}_${record.dateKey}';
+        final key = record.dateKey;
         if (!seen.containsKey(key)) {
           seen[key] = record;
+        } else {
+          final existing = seen[key]!;
+          final existingHasCheckIn = existing.checkInTime != null ||
+              (existing.status != AttendanceStatus.absent && !existing.countsAsAbsent);
+          final newHasCheckIn = record.checkInTime != null ||
+              (record.status != AttendanceStatus.absent && !record.countsAsAbsent);
+
+          if (!existingHasCheckIn && newHasCheckIn) {
+            seen[key] = record;
+          } else if (existingHasCheckIn && newHasCheckIn) {
+            final existingTime =
+                existing.checkOutTime ?? existing.checkInTime ?? existing.date;
+            final newTime =
+                record.checkOutTime ?? record.checkInTime ?? record.date;
+            if (newTime.isAfter(existingTime)) {
+              seen[key] = record;
+            }
+          }
         }
       }
 
@@ -1417,6 +1450,18 @@ class AttendanceService {
     final employeeId = (data['employeeId'] as String? ?? '').trim();
     final email = (data['email'] as String? ?? '').trim();
 
+    DateTime? dob;
+    if (data['dob'] is Timestamp) {
+      dob = (data['dob'] as Timestamp).toDate();
+    } else if (data['dob'] is String && (data['dob'] as String).isNotEmpty) {
+      dob = DateTime.tryParse(data['dob'] as String);
+    }
+
+    final salaryRaw = data['salary'];
+    final salary = salaryRaw is num
+        ? salaryRaw.toDouble()
+        : double.tryParse(salaryRaw?.toString() ?? '');
+
     return Staff(
       id: doc.id,
       name: (data['name'] as String? ?? '').trim(),
@@ -1430,9 +1475,18 @@ class AttendanceService {
       joinDate: joinDate ?? DateTime.now(),
       photoUrl: data['photoUrl'] as String?,
       photoBase64: data['photoBase64'] as String?,
+      reportsTo: data['reportsTo'] as String?,
+      salary: salary,
       role: 'manager',
       isActive: (data['status'] as String? ?? 'active') != 'inactive',
       companyId: data['companyId'] as String?,
+      designation: data['designation'] as String?,
+      reportsToUserId: data['reportsToUserId'] as String?,
+      bloodGroup: data['bloodGroup'] as String?,
+      gender: data['gender'] as String?,
+      nationality: data['nationality'] as String?,
+      dob: dob,
+      address: data['address'] as String?,
       createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
       updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
     );
@@ -2102,6 +2156,23 @@ class AttendanceService {
     Map<String, dynamic>? data;
     if (snap.docs.isNotEmpty) {
       data = snap.docs.first.data();
+    } else {
+      final staffById = await _db.collection('staff').doc(employeeId).get();
+      if (staffById.exists) {
+        data = staffById.data();
+      } else {
+        final staffByEmail = await _db
+            .collection('staff')
+            .where('email', isEqualTo: employeeId)
+            .limit(1)
+            .get();
+        if (staffByEmail.docs.isNotEmpty) {
+          data = staffByEmail.docs.first.data();
+        }
+      }
+    }
+
+    if (data != null) {
       if ((data['isActive'] as bool?) == false) return false;
     } else {
       final managerSnap = await _db
@@ -2112,27 +2183,36 @@ class AttendanceService {
       if (managerSnap.docs.isNotEmpty) {
         data = managerSnap.docs.first.data();
       } else {
-        final managerByEmail = await _db
-            .collection('managers')
-            .where('email', isEqualTo: employeeId)
-            .limit(1)
-            .get();
-        if (managerByEmail.docs.isEmpty) return false;
-        data = managerByEmail.docs.first.data();
+        final managerById =
+            await _db.collection('managers').doc(employeeId).get();
+        if (managerById.exists) {
+          data = managerById.data();
+        } else {
+          final managerByEmail = await _db
+              .collection('managers')
+              .where('email', isEqualTo: employeeId)
+              .limit(1)
+              .get();
+          if (managerByEmail.docs.isEmpty) return false;
+          data = managerByEmail.docs.first.data();
+        }
       }
+      if (data == null) return false;
       if ((data['status'] as String? ?? 'active') == 'inactive') return false;
     }
 
-    if (employeeName.isNotEmpty && data['name'] != null) {
-      final storedName = data['name'].toString().trim().toLowerCase();
+    final recordData = data;
+
+    if (employeeName.isNotEmpty && recordData['name'] != null) {
+      final storedName = recordData['name'].toString().trim().toLowerCase();
       if (storedName.isNotEmpty &&
           storedName != employeeName.trim().toLowerCase()) {
         return false;
       }
     }
 
-    if (department.isNotEmpty && data['department'] != null) {
-      final storedDept = data['department'].toString().trim().toLowerCase();
+    if (department.isNotEmpty && recordData['department'] != null) {
+      final storedDept = recordData['department'].toString().trim().toLowerCase();
       if (storedDept.isNotEmpty &&
           storedDept != department.trim().toLowerCase()) {
         return false;
@@ -2251,8 +2331,26 @@ class AttendanceService {
         .where('employeeId', isEqualTo: submittedEmployeeId)
         .limit(1)
         .get();
-    final staffData =
+    Map<String, dynamic>? staffData =
         staffSnap.docs.isNotEmpty ? staffSnap.docs.first.data() : null;
+    if (staffData == null) {
+      final staffById =
+          await _db.collection('staff').doc(submittedEmployeeId).get();
+      if (staffById.exists) {
+        staffData = staffById.data();
+      }
+    }
+    if (staffData == null) {
+      final staffByEmail = await _db
+          .collection('staff')
+          .where('email', isEqualTo: submittedEmployeeId)
+          .limit(1)
+          .get();
+      if (staffByEmail.docs.isNotEmpty) {
+        staffData = staffByEmail.docs.first.data();
+      }
+    }
+
     Map<String, dynamic>? managerData;
     if (staffData == null) {
       final managerSnap = await _db
@@ -2285,17 +2383,23 @@ class AttendanceService {
             : ((managerData['email'] as String?)?.trim().isNotEmpty == true
                 ? (managerData['email'] as String).trim()
                 : submittedEmployeeId))
-        : submittedEmployeeId;
+        : ((staffData?['employeeId'] as String?)?.trim().isNotEmpty == true
+            ? (staffData!['employeeId'] as String).trim()
+            : submittedEmployeeId);
     final canonicalEmployeeName = isManagerAttendance
         ? ((managerData['name'] as String?)?.trim().isNotEmpty == true
             ? (managerData['name'] as String).trim()
             : submittedEmployeeName)
-        : submittedEmployeeName;
+        : ((staffData?['name'] as String?)?.trim().isNotEmpty == true
+            ? (staffData!['name'] as String).trim()
+            : submittedEmployeeName);
     final canonicalDepartment = isManagerAttendance
         ? ((managerData['department'] as String?)?.trim().isNotEmpty == true
             ? (managerData['department'] as String).trim()
             : 'Management')
-        : submittedDepartment;
+        : ((staffData?['department'] as String?)?.trim().isNotEmpty == true
+            ? (staffData!['department'] as String).trim()
+            : submittedDepartment);
     final managerName = isManagerAttendance
         ? 'Admin'
         : staffData?['reportsTo']?.toString() ??

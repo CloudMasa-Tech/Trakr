@@ -53,3 +53,4 @@ app.*.map.json
 .firebase/
 .vercel
 .env*.local
+*.zip

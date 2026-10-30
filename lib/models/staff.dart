@@ -104,7 +104,11 @@ class Staff {
       bloodGroup: data['bloodGroup'] as String?,
       gender: data['gender'] as String?,
       nationality: data['nationality'] as String?,
-      dob: (data['dob'] as Timestamp?)?.toDate(),
+      dob: data['dob'] is Timestamp
+          ? (data['dob'] as Timestamp).toDate()
+          : (data['dob'] is String && (data['dob'] as String).isNotEmpty
+              ? DateTime.tryParse(data['dob'] as String)
+              : null),
       address: data['address'] as String?,
     );
   }

@@ -129,6 +129,11 @@ class ManagerAccountService {
         'reportsToUserId': reportsToUserId,
         'managerId': managerRef.id,
         'companyId': resolvedCompanyId,
+        'bloodGroup': bloodGroup,
+        'gender': gender,
+        'nationality': nationality,
+        'dob': dob != null ? Timestamp.fromDate(dob) : null,
+        'address': address,
         'createdAt': FieldValue.serverTimestamp(),
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));

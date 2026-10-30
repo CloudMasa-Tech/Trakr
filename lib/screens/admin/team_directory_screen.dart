@@ -1182,14 +1182,14 @@ class _TeamDirectoryScreenState extends State<TeamDirectoryScreen> {
         !(statusText.contains('inactive') || statusText.contains('disabled'));
     final joinDate = _parseImportDate(
       _field(row, const ['joindate', 'joiningdate', 'datejoined', 'startdate']),
-    );
+    ) ?? DateTime.now();
     final dobText = _field(row, const [
       'dob',
       'dateofbirth',
       'birthdate',
       'datebirth',
     ]);
-    final dob = dobText.trim().isEmpty ? null : _parseImportDate(dobText);
+    final dob = _parseImportDate(dobText);
     final bloodGroup = _field(row, const [
       'bloodgroup',
       'blood',
@@ -1346,9 +1346,10 @@ class _TeamDirectoryScreenState extends State<TeamDirectoryScreen> {
     return 'Temp@$suffix';
   }
 
-  DateTime _parseImportDate(String value) {
+  DateTime? _parseImportDate(String? value) {
+    if (value == null) return null;
     final trimmed = value.trim();
-    if (trimmed.isEmpty) return DateTime.now();
+    if (trimmed.isEmpty) return null;
 
     final numeric = num.tryParse(trimmed);
     if (numeric != null && numeric > 20000) {
@@ -1360,13 +1361,19 @@ class _TeamDirectoryScreenState extends State<TeamDirectoryScreen> {
       'dd-MM-yyyy',
       'MM/dd/yyyy',
       'dd/MM/yyyy',
+      'd/M/yyyy',
+      'dd.MM.yyyy',
+      'yyyy/MM/dd',
       'MMM dd, yyyy',
+      'MMMM dd, yyyy',
+      'dd MMM yyyy',
+      'dd MMMM yyyy',
     ]) {
       try {
         return DateFormat(pattern).parseStrict(trimmed);
       } catch (_) {}
     }
-    return DateTime.tryParse(trimmed) ?? DateTime.now();
+    return DateTime.tryParse(trimmed);
   }
 
   Future<void> _upsertStaff(Map<String, dynamic> data) async {
@@ -2742,11 +2749,20 @@ class _EditEmployeeDialogState extends State<_EditEmployeeDialog> {
           ? 'Select Date of Birth'
           : DateFormat('dd MMM yyyy').format(_dob!),
       onTap: () async {
+        final now = DateTime.now();
+        final firstDate = DateTime(1940);
+        final lastDate = DateTime(now.year - 14, now.month, now.day);
+        final fallbackYear = now.year - 22;
+        DateTime initialDate = _dob ?? DateTime(fallbackYear, 1, 1);
+        if (initialDate.isAfter(lastDate)) initialDate = lastDate;
+        if (initialDate.isBefore(firstDate)) initialDate = firstDate;
+
         final picked = await showDatePicker(
           context: context,
-          initialDate: _dob ?? DateTime(1995),
-          firstDate: DateTime(1940),
-          lastDate: DateTime.now().subtract(const Duration(days: 365 * 15)),
+          initialDate: initialDate,
+          firstDate: firstDate,
+          lastDate: lastDate,
+          initialDatePickerMode: DatePickerMode.year,
         );
         if (picked != null) setState(() => _dob = picked);
       },
@@ -3197,11 +3213,20 @@ class _EditManagerDialogState extends State<_EditManagerDialog> {
           ? 'Select Date of Birth'
           : DateFormat('dd MMM yyyy').format(_dob!),
       onTap: () async {
+        final now = DateTime.now();
+        final firstDate = DateTime(1940);
+        final lastDate = DateTime(now.year - 14, now.month, now.day);
+        final fallbackYear = now.year - 22;
+        DateTime initialDate = _dob ?? DateTime(fallbackYear, 1, 1);
+        if (initialDate.isAfter(lastDate)) initialDate = lastDate;
+        if (initialDate.isBefore(firstDate)) initialDate = firstDate;
+
         final picked = await showDatePicker(
           context: context,
-          initialDate: _dob ?? DateTime(1995),
-          firstDate: DateTime(1940),
-          lastDate: DateTime.now().subtract(const Duration(days: 365 * 15)),
+          initialDate: initialDate,
+          firstDate: firstDate,
+          lastDate: lastDate,
+          initialDatePickerMode: DatePickerMode.year,
         );
         if (picked != null) setState(() => _dob = picked);
       },

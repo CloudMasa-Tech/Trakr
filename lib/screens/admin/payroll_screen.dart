@@ -122,6 +122,12 @@ class _PayrollScreenState extends State<PayrollScreen> {
 
   Staff _managerDocToStaff(DocumentSnapshot doc) {
     final data = doc.data() as Map<String, dynamic>? ?? {};
+    DateTime? parseDate(dynamic val) {
+      if (val is Timestamp) return val.toDate();
+      if (val is String && val.isNotEmpty) return DateTime.tryParse(val);
+      return null;
+    }
+
     return Staff(
       id: doc.id,
       name: (data['name'] as String? ?? '').trim(),
@@ -130,19 +136,19 @@ class _PayrollScreenState extends State<PayrollScreen> {
       department: (data['department'] as String? ?? '').trim(),
       position: (data['position'] as String? ?? 'Manager').trim(),
       employeeId: (data['employeeId'] as String? ?? '').trim(),
-      joinDate: (data['joinDate'] as Timestamp?)?.toDate() ?? DateTime.now(),
+      joinDate: parseDate(data['joinDate']) ?? DateTime.now(),
       photoUrl: data['photoUrl'] as String?,
       reportsTo: data['reportsTo'] as String?,
       salary:
           data['salary'] != null ? (data['salary'] as num).toDouble() : null,
       role: 'manager',
       isActive: (data['status'] as String? ?? 'active') != 'inactive',
-      createdAt: (data['createdAt'] as Timestamp?)?.toDate(),
-      updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
+      createdAt: parseDate(data['createdAt']),
+      updatedAt: parseDate(data['updatedAt']),
       bloodGroup: data['bloodGroup'] as String?,
       gender: data['gender'] as String?,
       nationality: data['nationality'] as String?,
-      dob: (data['dob'] as Timestamp?)?.toDate(),
+      dob: parseDate(data['dob']),
       address: data['address'] as String?,
     );
   }
