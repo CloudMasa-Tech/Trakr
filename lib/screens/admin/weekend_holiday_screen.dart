@@ -150,6 +150,19 @@ class _WeekendHolidayScreenState extends State<WeekendHolidayScreen> {
         'updatedAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
+      // Clean up any errant missing_ or autoMarkedAbsent attendance records on all holiday dates
+      for (final dateKey in allEventDates) {
+        try {
+          final snap = await _db.collection('attendance').where('dateKey', isEqualTo: dateKey).get();
+          for (final doc in snap.docs) {
+            final data = doc.data();
+            if (doc.id.startsWith('missing_') || data['autoMarkedAbsent'] == true) {
+              await doc.reference.delete();
+            }
+          }
+        } catch (_) {}
+      }
+
       setState(() {
         _holidayEvents = eventsToSave;
         _holidayDatesCtrl.text = allEventDates.join(', ');

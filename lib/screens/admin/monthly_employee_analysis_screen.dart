@@ -24,6 +24,7 @@ class MonthlyEmployeeAnalysisScreen extends StatefulWidget {
   final int year;
   final num totalApprovedLeaves;
   final VoidCallback onBack;
+  final List<AttendanceModel>? initialRecords;
 
   const MonthlyEmployeeAnalysisScreen({
     super.key,
@@ -32,6 +33,7 @@ class MonthlyEmployeeAnalysisScreen extends StatefulWidget {
     required this.year,
     required this.totalApprovedLeaves,
     required this.onBack,
+    this.initialRecords,
   });
 
   @override
@@ -127,18 +129,49 @@ class _MonthlyEmployeeAnalysisScreenState
                       limit: null,
                     ),
                     builder: (context, snapshot) {
-                      if (snapshot.connectionState == ConnectionState.waiting) {
+                      if (widget.initialRecords == null &&
+                          snapshot.connectionState == ConnectionState.waiting) {
                         return const Center(
                           child: CircularProgressIndicator(color: _meaPrimary),
                         );
                       }
 
-                      final allRecords = snapshot.data ?? <AttendanceModel>[];
-                      final records = allRecords
+                      final allRecords = widget.initialRecords ?? snapshot.data ?? <AttendanceModel>[];
+                      final rawRecords = allRecords
                           .where((r) =>
                               r.date.month == widget.month &&
                               r.date.year == widget.year)
                           .toList();
+
+                      // Deduplicate by dateKey prioritizing check-ins over absent records
+                      final Map<String, AttendanceModel> dayMap = {};
+                      for (var record in rawRecords) {
+                        final dateKey = record.dateKey;
+                        if (!dayMap.containsKey(dateKey)) {
+                          dayMap[dateKey] = record;
+                        } else {
+                          final existing = dayMap[dateKey]!;
+                          final existingHasCheckIn = existing.checkInTime != null ||
+                              (existing.status != AttendanceStatus.absent && !existing.countsAsAbsent);
+                          final newHasCheckIn = record.checkInTime != null ||
+                              (record.status != AttendanceStatus.absent && !record.countsAsAbsent);
+
+                          if (!existingHasCheckIn && newHasCheckIn) {
+                            dayMap[dateKey] = record;
+                          } else if (existingHasCheckIn && newHasCheckIn) {
+                            final existingTime =
+                                existing.checkOutTime ?? existing.checkInTime ?? existing.date;
+                            final newTime =
+                                record.checkOutTime ?? record.checkInTime ?? record.date;
+                            if (newTime.isAfter(existingTime)) {
+                              dayMap[dateKey] = record;
+                            }
+                          }
+                        }
+                      }
+
+                      final records = dayMap.values.toList()
+                        ..sort((a, b) => b.date.compareTo(a.date));
 
                       int totalPendingMinutes = 0;
                       int totalPermissionMinutes = 0;
@@ -781,12 +814,46 @@ class _MonthlyEmployeeAnalysisScreenState
           ),
         ],
       ),
-      subtitle: 'Present: $presentDays d  •  Absent: $absentDays d',
+      subtitle: '$presentDays attended  •  $officeLeaveDaysInMonth office leaves',
     );
 
-    // Card 2: Total Leave Taken (Compact)
-    final cardLeaveTaken = _buildCompactCard(
+    // Card 2: Absent Days (Compact)
+    final cardAbsentDays = _buildCompactCard(
       accentColor: _meaRed,
+      icon: Icons.person_off_rounded,
+      title: 'ABSENT DAYS',
+      badgeText: absentDays > 0 ? '$absentDays d' : null,
+      mainValue: Row(
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
+        children: [
+          Text(
+            '$absentDays',
+            style: const TextStyle(
+              color: _meaRed,
+              fontSize: 22,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            absentDays == 1 ? 'Day' : 'Days',
+            style: const TextStyle(
+              color: AppThemeColors.darkText,
+              fontSize: 15,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+      subtitle: absentDays == 0
+          ? 'No unexcused absence'
+          : '$absentDays unexcused absent ${absentDays == 1 ? 'day' : 'days'}',
+    );
+
+    // Card 3: Total Leave Taken (Compact)
+    final cardLeaveTaken = _buildCompactCard(
+      accentColor: _meaCyan,
       icon: Icons.event_busy_rounded,
       title: 'TOTAL LEAVE TAKEN',
       badgeText: totalLeaveTaken > 0 ? '${_formatDays(totalLeaveTaken)}d' : null,
@@ -797,7 +864,7 @@ class _MonthlyEmployeeAnalysisScreenState
           Text(
             _formatDays(totalLeaveTaken),
             style: const TextStyle(
-              color: _meaRed,
+              color: _meaCyan,
               fontSize: 22,
               fontWeight: FontWeight.w800,
             ),
@@ -816,7 +883,7 @@ class _MonthlyEmployeeAnalysisScreenState
       subtitle: '${_formatDays(approvedLeaves)}d approved  •  ${_formatDays(pendingHrsLeaves)}d pending hrs',
     );
 
-    // Card 3: Pending & Permission Hours (Compact)
+    // Card 4: Pending & Permission Hours (Compact)
     final cardPendingHours = _buildCompactCard(
       accentColor: _meaAmber,
       icon: Icons.hourglass_bottom_rounded,
@@ -836,20 +903,44 @@ class _MonthlyEmployeeAnalysisScreenState
     return LayoutBuilder(
       builder: (context, constraints) {
         final w = constraints.maxWidth;
-        if (w >= 900) {
+        if (w >= 1050) {
           return Row(
             children: [
               Expanded(child: cardWorkingDays),
+              const SizedBox(width: 14),
+              Expanded(child: cardAbsentDays),
               const SizedBox(width: 14),
               Expanded(child: cardLeaveTaken),
               const SizedBox(width: 14),
               Expanded(child: cardPendingHours),
             ],
           );
+        } else if (w >= 650) {
+          return Column(
+            children: [
+              Row(
+                children: [
+                  Expanded(child: cardWorkingDays),
+                  const SizedBox(width: 14),
+                  Expanded(child: cardAbsentDays),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Expanded(child: cardLeaveTaken),
+                  const SizedBox(width: 14),
+                  Expanded(child: cardPendingHours),
+                ],
+              ),
+            ],
+          );
         } else {
           return Column(
             children: [
               cardWorkingDays,
+              const SizedBox(height: 12),
+              cardAbsentDays,
               const SizedBox(height: 12),
               cardLeaveTaken,
               const SizedBox(height: 12),

@@ -10,11 +10,13 @@ class _HolidayItem {
   final DateTime date;
   final String name;
   final String category; // 'Government', 'Festival', 'Office Leave'
+  final bool isCustom;
 
   const _HolidayItem({
     required this.date,
     required this.name,
     required this.category,
+    this.isCustom = false,
   });
 
   String get dateKey =>
@@ -71,44 +73,89 @@ class _HolidayCalendarScreenState extends State<HolidayCalendarScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Page Header
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0EA5E9).withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      Icons.calendar_month_rounded,
-                      color: Color(0xFF0EA5E9),
-                      size: 26,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  const Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final isNarrow = constraints.maxWidth < 650;
+                  final headerLeft = Row(
+                    mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        'Holiday Calendar',
-                        style: TextStyle(
-                          fontSize: 26,
-                          fontWeight: FontWeight.w900,
-                          color: AppThemeColors.darkText,
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0EA5E9).withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.calendar_month_rounded,
+                          color: Color(0xFF0EA5E9),
+                          size: 26,
                         ),
                       ),
-                      SizedBox(height: 4),
-                      Text(
-                        'Official company holidays, festival celebrations, and office leave schedule',
-                        style: TextStyle(
-                          color: AppThemeColors.darkMuted,
-                          fontSize: 13,
-                          fontWeight: FontWeight.w500,
-                        ),
+                      const SizedBox(width: 14),
+                      const Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Holiday Calendar',
+                            style: TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w900,
+                              color: AppThemeColors.darkText,
+                            ),
+                          ),
+                          SizedBox(height: 4),
+                          Text(
+                            'Official company holidays, festival celebrations, and office leave schedule',
+                            style: TextStyle(
+                              color: AppThemeColors.darkMuted,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
-                  ),
-                ],
+                  );
+
+                  final addBtn = ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color(0xFF0EA5E9),
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 18, vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    onPressed: () => _showAddHolidayDialog(context),
+                    icon: const Icon(Icons.add_rounded, size: 20),
+                    label: const Text(
+                      'Add Holiday / Festival',
+                      style: TextStyle(
+                          fontSize: 13.5, fontWeight: FontWeight.w700),
+                    ),
+                  );
+
+                  if (isNarrow) {
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        headerLeft,
+                        const SizedBox(height: 14),
+                        addBtn,
+                      ],
+                    );
+                  }
+
+                  return Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      headerLeft,
+                      addBtn,
+                    ],
+                  );
+                },
               ),
               const SizedBox(height: 24),
 
@@ -135,6 +182,7 @@ class _HolidayCalendarScreenState extends State<HolidayCalendarScreen> {
                               date: parsed,
                               name: 'Office Leave',
                               category: 'Office Leave',
+                              isCustom: true,
                             ));
                             existingKeys.add(str);
                           }
@@ -156,6 +204,7 @@ class _HolidayCalendarScreenState extends State<HolidayCalendarScreen> {
                                 date: parsed,
                                 name: name,
                                 category: cat,
+                                isCustom: true,
                               ));
                               existingKeys.add(dk);
                             }
@@ -468,6 +517,16 @@ class _HolidayCalendarScreenState extends State<HolidayCalendarScreen> {
                             fontWeight: FontWeight.w500,
                           ),
                         ),
+
+                      if (item.isCustom) ...[
+                        const SizedBox(width: 8),
+                        IconButton(
+                          icon: const Icon(Icons.delete_outline_rounded,
+                              size: 18, color: Color(0xFFEF4444)),
+                          tooltip: 'Delete custom holiday',
+                          onPressed: () => _deleteCustomHoliday(item),
+                        ),
+                      ],
                     ],
                   ),
                 );
@@ -475,6 +534,415 @@ class _HolidayCalendarScreenState extends State<HolidayCalendarScreen> {
             ),
         ],
       ),
+    );
+  }
+
+  Future<void> _deleteCustomHoliday(_HolidayItem item) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppThemeColors.darkSurface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Delete Holiday',
+            style: TextStyle(
+                color: AppThemeColors.darkText, fontWeight: FontWeight.bold)),
+        content: Text(
+            'Are you sure you want to remove "${item.name}" on ${item.dateKey}?',
+            style: const TextStyle(color: AppThemeColors.darkMuted)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel',
+                style: TextStyle(color: AppThemeColors.darkMuted)),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFEF4444)),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('Delete', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm != true) return;
+
+    try {
+      final docRef = FirebaseContextProvider.current.firestore
+          .collection('geo_config')
+          .doc('default');
+      final snap = await docRef.get();
+      if (!snap.exists) return;
+      final data = snap.data() ?? {};
+
+      final rawDates = List<dynamic>.from(data['holidayDates'] ?? []);
+      rawDates.removeWhere((d) => d?.toString().trim() == item.dateKey);
+
+      final rawEvents = List<dynamic>.from(data['holidayEvents'] ?? []);
+      rawEvents.removeWhere((ev) {
+        if (ev is Map) {
+          final dk = ev['dateKey']?.toString().trim();
+          return dk == item.dateKey;
+        }
+        return false;
+      });
+
+      await docRef.set({
+        'holidayDates': rawDates,
+        'holidayEvents': rawEvents,
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Holiday "${item.name}" removed.'),
+          backgroundColor: const Color(0xFF0EA5E9),
+        ));
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Failed to delete holiday: $e'),
+          backgroundColor: const Color(0xFFEF4444),
+        ));
+      }
+    }
+  }
+
+  Future<void> _showAddHolidayDialog(BuildContext context) async {
+    final titleCtrl = TextEditingController();
+    DateTime pickedDate = _selectedDate ?? DateTime.now();
+    String category = 'Festival';
+    bool isSaving = false;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            final dateKeyStr = DateFormat('yyyy-MM-dd').format(pickedDate);
+            final displayDateStr =
+                DateFormat('EEE, dd MMMM yyyy').format(pickedDate);
+
+            return AlertDialog(
+              backgroundColor: AppThemeColors.darkSurface,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(20),
+                side: const BorderSide(color: AppThemeColors.darkBorder),
+              ),
+              title: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0EA5E9).withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(Icons.celebration_rounded,
+                        color: Color(0xFF0EA5E9), size: 22),
+                  ),
+                  const SizedBox(width: 12),
+                  const Text(
+                    'Add Holiday / Festival',
+                    style: TextStyle(
+                      color: AppThemeColors.darkText,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: 440,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Holiday Name / Festival',
+                        style: TextStyle(
+                          color: AppThemeColors.darkText,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: titleCtrl,
+                        style: const TextStyle(
+                            color: AppThemeColors.darkText, fontSize: 14),
+                        decoration: InputDecoration(
+                          hintText: 'e.g. Diwali, Eid, Regional Holiday',
+                          hintStyle: const TextStyle(
+                              color: AppThemeColors.darkMuted, fontSize: 13),
+                          filled: true,
+                          fillColor: AppThemeColors.darkCanvas,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(
+                                color: AppThemeColors.darkBorder),
+                          ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(
+                                color: AppThemeColors.darkBorder),
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(12),
+                            borderSide: const BorderSide(
+                                color: Color(0xFF0EA5E9), width: 1.5),
+                          ),
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 14),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      const Text(
+                        'Date',
+                        style: TextStyle(
+                          color: AppThemeColors.darkText,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      InkWell(
+                        onTap: () async {
+                          final selected = await showDatePicker(
+                            context: context,
+                            initialDate: pickedDate,
+                            firstDate: DateTime(2025, 1, 1),
+                            lastDate: DateTime(2030, 12, 31),
+                            builder: (context, child) {
+                              return Theme(
+                                data: Theme.of(context).copyWith(
+                                  colorScheme: const ColorScheme.dark(
+                                    primary: Color(0xFF0EA5E9),
+                                    onPrimary: Colors.white,
+                                    surface: AppThemeColors.darkSurface,
+                                    onSurface: AppThemeColors.darkText,
+                                  ),
+                                ),
+                                child: child!,
+                              );
+                            },
+                          );
+                          if (selected != null) {
+                            setDialogState(() => pickedDate = selected);
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(12),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 14),
+                          decoration: BoxDecoration(
+                            color: AppThemeColors.darkCanvas,
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(color: AppThemeColors.darkBorder),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.event_rounded,
+                                  color: Color(0xFF0EA5E9), size: 20),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  '$displayDateStr ($dateKeyStr)',
+                                  style: const TextStyle(
+                                    color: AppThemeColors.darkText,
+                                    fontSize: 14,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              const Icon(Icons.keyboard_arrow_down_rounded,
+                                  color: AppThemeColors.darkMuted),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 18),
+                      const Text(
+                        'Category',
+                        style: TextStyle(
+                          color: AppThemeColors.darkText,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Wrap(
+                        spacing: 10,
+                        runSpacing: 10,
+                        children: [
+                          'Festival',
+                          'Government',
+                          'Office Leave'
+                        ].map((cat) {
+                          final isCatSelected = category == cat;
+                          return InkWell(
+                            onTap: () => setDialogState(() => category = cat),
+                            borderRadius: BorderRadius.circular(10),
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 14, vertical: 8),
+                              decoration: BoxDecoration(
+                                color: isCatSelected
+                                    ? const Color(0xFF0EA5E9)
+                                    : AppThemeColors.darkCanvas,
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(
+                                  color: isCatSelected
+                                      ? const Color(0xFF0EA5E9)
+                                      : AppThemeColors.darkBorder,
+                                ),
+                              ),
+                              child: Text(
+                                cat,
+                                style: TextStyle(
+                                  color: isCatSelected
+                                      ? Colors.white
+                                      : AppThemeColors.darkText,
+                                  fontSize: 12,
+                                  fontWeight: isCatSelected
+                                      ? FontWeight.w700
+                                      : FontWeight.w500,
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                      const SizedBox(height: 14),
+                      const Text(
+                        '💡 When saved, this date will immediately be recognized company-wide as an official holiday. Any automatic absence records for this date will be purged.',
+                        style: TextStyle(
+                          color: AppThemeColors.darkMuted,
+                          fontSize: 11.5,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actionsPadding:
+                  const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+              actions: [
+                TextButton(
+                  onPressed: isSaving ? null : () => Navigator.of(ctx).pop(),
+                  child: const Text('Cancel',
+                      style: TextStyle(color: AppThemeColors.darkMuted)),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF0EA5E9),
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 20, vertical: 12),
+                  ),
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          final messenger = ScaffoldMessenger.of(context);
+                          final name = titleCtrl.text.trim();
+                          if (name.isEmpty) {
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                content: Text('Please enter a holiday title.'),
+                                backgroundColor: Color(0xFFEF4444),
+                              ),
+                            );
+                            return;
+                          }
+
+                          setDialogState(() => isSaving = true);
+                          try {
+                            final firestore =
+                                FirebaseContextProvider.current.firestore;
+                            final docRef = firestore
+                                .collection('geo_config')
+                                .doc('default');
+                            final snap = await docRef.get();
+                            final data = snap.data() ?? {};
+
+                            final rawDates = List<String>.from(
+                                data['holidayDates'] ?? []);
+                            if (!rawDates.contains(dateKeyStr)) {
+                              rawDates.add(dateKeyStr);
+                              rawDates.sort();
+                            }
+
+                            final rawEvents = List<dynamic>.from(
+                                data['holidayEvents'] ?? []);
+                            // Remove existing event for this dateKey if any
+                            rawEvents.removeWhere((ev) =>
+                                ev is Map && ev['dateKey'] == dateKeyStr);
+                            rawEvents.add({
+                              'dateKey': dateKeyStr,
+                              'title': name,
+                              'category': category,
+                              'date': Timestamp.fromDate(pickedDate),
+                            });
+
+                            await docRef.set({
+                              'holidayDates': rawDates,
+                              'holidayEvents': rawEvents,
+                              'updatedAt': FieldValue.serverTimestamp(),
+                            }, SetOptions(merge: true));
+
+                            // Purge any errant missing_ or autoMarkedAbsent attendance docs for this dateKey
+                            try {
+                              final attSnap = await firestore
+                                  .collection('attendance')
+                                  .where('dateKey', isEqualTo: dateKeyStr)
+                                  .get();
+                              for (final doc in attSnap.docs) {
+                                final d = doc.data();
+                                if (doc.id.startsWith('missing_') ||
+                                    d['autoMarkedAbsent'] == true) {
+                                  await doc.reference.delete();
+                                }
+                              }
+                            } catch (_) {}
+
+                            if (ctx.mounted) Navigator.of(ctx).pop();
+                            messenger.showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                    'Holiday "$name" added successfully and synchronized.'),
+                                backgroundColor: const Color(0xFF10B981),
+                              ),
+                            );
+                          } catch (e) {
+                            setDialogState(() => isSaving = false);
+                            messenger.showSnackBar(
+                              SnackBar(
+                                content: Text('Failed to save holiday: $e'),
+                                backgroundColor: const Color(0xFFEF4444),
+                              ),
+                            );
+                          }
+                        },
+                  child: isSaving
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: Colors.white),
+                        )
+                      : const Text('Add Holiday',
+                          style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 

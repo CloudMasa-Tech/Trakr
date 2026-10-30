@@ -372,6 +372,7 @@ class _MonthlyAnalysisScreenState extends State<MonthlyAnalysisScreen> {
                                 year: _selectedYear,
                                 totalApprovedLeaves:
                                     _selectedSummary!.totalLeaveCount,
+                                initialRecords: employeeDayRecords[_selectedSummary]?.values.toList(),
                                 onBack: () =>
                                     setState(() => _selectedSummary = null),
                               );
