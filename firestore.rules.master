@@ -187,9 +187,11 @@ service cloud.firestore {
       allow read: if isSuperAdmin();
       allow write: if isSuperAdmin();
     }
-    match /attendance/{docId} {
-      allow read: if isSuperAdmin();
-      allow write: if false;
+    match /attendance/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /geo_config/{document=**} {
+      allow read, write: if signedIn();
     }
     match /support_tickets/{docId} {
       allow read: if isSuperAdmin();
