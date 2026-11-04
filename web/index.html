@@ -93,6 +93,12 @@
     normalizeFlutterViewport();
     normalizeGeneratedStyles(document);
 
+    window.addEventListener('webglcontextlost', function (event) {
+      // Prevents the browser from permanently abandoning the WebGL context,
+      // allowing it to restore (firing webglcontextrestored) once GPU is available.
+      event.preventDefault();
+    }, true);
+
     window.addEventListener('error', function (event) {
       var message = String(event.message || '');
       var stack = String((event.error && event.error.stack) || '');

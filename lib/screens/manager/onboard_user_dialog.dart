@@ -193,6 +193,26 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     }
   }
 
+  Future<String?> _resolveCompanyId() async {
+    try {
+      final user = FirebaseContextProvider.current.auth.currentUser;
+      if (user == null) return null;
+      final doc = await FirebaseContextProvider.current.firestore
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      if (!doc.exists) return null;
+      final companyId = doc.data()?['companyId'] as String?;
+      if (companyId != null &&
+          companyId.trim().isNotEmpty &&
+          companyId.trim() != '[DEFAULT]') {
+        return companyId.trim();
+      }
+    } catch (_) {}
+    final appName = FirebaseContextProvider.current.app.name;
+    return (appName.isNotEmpty && appName != '[DEFAULT]') ? appName : null;
+  }
+
   Future<void> _pickJoinDate() async {
     final picked = await showDatePicker(
       context: context,
@@ -309,6 +329,8 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     String? emailError;
 
     try {
+      final resolvedCompanyId = await _resolveCompanyId();
+
       if (_assignedRole == AppUserRole.employee) {
         final emailTaken = await _staffService.isEmailAlreadyUsed(email);
         if (emailTaken) {
@@ -322,7 +344,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
           id: '',
           name: name,
           email: email,
-          companyId: FirebaseContextProvider.current.app.name,
+          companyId: resolvedCompanyId,
           phone: phone,
           department: department,
           position: '',
@@ -370,6 +392,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             joinDate: _joinDate,
             status: 'active',
             photoUrl: _photoUrl,
+            companyId: resolvedCompanyId,
             bloodGroup: _selectedBloodGroup,
             gender: _selectedGender,
             nationality: nationality,
@@ -387,6 +410,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             'phone': phone,
             'employeeId': _employeeIdCtrl.text.trim(),
             'department': department,
+            'companyId': resolvedCompanyId,
             'joinDate': Timestamp.fromDate(_joinDate),
             'status': 'inactive',
             'photoUrl': _photoUrl,

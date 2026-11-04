@@ -2,7 +2,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const FUNCTIONS_DIR = '/home/keerthu/keerthana/TRAKR/Trakr/functions';
+const FUNCTIONS_DIR = path.resolve(__dirname, '..');
 const DEPLOY_HASH_FILE = path.join(FUNCTIONS_DIR, '.deploy_hash');
 
 function getLatestGitCommitHash() {

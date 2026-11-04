@@ -156,10 +156,15 @@ service cloud.firestore {
     // The Master project also has a `users` collection for platform accounts.
     // Super Admin has full access; Company Admins can read their own doc.
     match /users/{userId} {
-      allow read: if isSuperAdmin() || (signedIn() && request.auth.uid == userId);
-      allow create: if isSuperAdmin();
-      allow update: if isSuperAdmin() || (signedIn() && request.auth.uid == userId);
+      allow read: if signedIn();
+      allow create, update: if signedIn();
       allow delete: if isSuperAdmin();
+    }
+    match /staff/{document=**} {
+      allow read, write: if signedIn();
+    }
+    match /managers/{document=**} {
+      allow read, write: if signedIn();
     }
 
     // ================================================================

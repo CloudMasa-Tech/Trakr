@@ -47,15 +47,26 @@ function resolveCorsOrigin(origin) {
         .map((s) => s.trim())
         .filter(Boolean);
     const allowed = [
-        // Development: any localhost port
+        // Development: any localhost or 127.0.0.1 port
         /^https?:\/\/localhost(:\d+)?$/i,
-        /^http:\/\/127\.0\.0\.1(:\d+)?$/i,
-        // Production: master project Firebase Hosting domains
-        /^https:\/\/trakradminsetup-28437([a-z0-9-]*\.){0,2}(web\.app|firebaseapp\.com)$/i,
+        /^https?:\/\/127\.0\.0\.1(:\d+)?$/i,
+        // Production: CloudMasa domains (including trakr.cloudmasa.com)
+        /^https:\/\/([a-z0-9-]+\.)*cloudmasa\.com$/i,
+        // Production: any Firebase Hosting domain (master or tenant projects)
+        /^https:\/\/([a-z0-9-]+\.)*(web\.app|firebaseapp\.com)$/i,
         // Extra origins configured via environment
         ...extra.map((o) => new RegExp(`^${o.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')),
     ];
-    return allowed.some((re) => re.test(origin)) ? origin : null;
+    if (allowed.some((re) => re.test(origin))) {
+        return origin;
+    }
+    // Also permit secure HTTPS origins for white-labeled tenant custom domains.
+    // Endpoints require explicit Authorization: Bearer <idToken> and do not use
+    // ambient cookie credentials, so reflecting HTTPS origins is safe.
+    if (/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(origin)) {
+        return origin;
+    }
+    return null;
 }
 /** Applies CORS response headers based on the request Origin. */
 function applyCors(req, res) {

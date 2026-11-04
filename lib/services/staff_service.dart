@@ -58,6 +58,27 @@ class StaffService {
       }
 
       // 2. Create record in 'users' collection for roles
+      String? resolvedCompanyId = staff.companyId;
+      if (resolvedCompanyId == null ||
+          resolvedCompanyId.isEmpty ||
+          resolvedCompanyId == '[DEFAULT]') {
+        final currentUser = _context.auth.currentUser;
+        if (currentUser != null) {
+          try {
+            final callerDoc = await _firestore
+                .collection('users')
+                .doc(currentUser.uid)
+                .get();
+            final callerCompanyId = callerDoc.data()?['companyId'] as String?;
+            if (callerCompanyId != null &&
+                callerCompanyId.isNotEmpty &&
+                callerCompanyId != '[DEFAULT]') {
+              resolvedCompanyId = callerCompanyId;
+            }
+          } catch (_) {}
+        }
+      }
+
       if (cred != null && cred.user != null) {
         await _firestore.collection('users').doc(cred.user!.uid).set({
           'name': staff.name,
@@ -70,7 +91,8 @@ class StaffService {
           'department': staff.department,
           'employeeId': staff.employeeId,
           'reportsToUserId': staff.reportsToUserId,
-          'companyId': staff.companyId,
+          if (resolvedCompanyId != null && resolvedCompanyId.isNotEmpty)
+            'companyId': resolvedCompanyId,
           'bloodGroup': staff.bloodGroup,
           'gender': staff.gender,
           'nationality': staff.nationality,
@@ -92,6 +114,9 @@ class StaffService {
       final staffMap = staff.toMap()
         ..remove('salary')
         ..remove('position');
+      if (resolvedCompanyId != null && resolvedCompanyId.isNotEmpty) {
+        staffMap['companyId'] = resolvedCompanyId;
+      }
       final docRef =
           await _firestore.collection(collectionName).add(staffMap);
 

@@ -46,13 +46,29 @@ class ManagerAccountService {
     try {
       final normalizedEmail = email.trim().toLowerCase();
 
-      // Company-scoping field. Fall back to the tenant app name (== workspace
-      // id, the same convention addStaff uses) so manager docs are never left
-      // without a companyId — those are required by tenant security rules once
-      // the manager is signed in.
-      final resolvedCompanyId = (companyId != null && companyId.trim().isNotEmpty)
+      // Company-scoping field. Fall back to caller's companyId or the tenant app
+      // name (== workspace id) so manager docs are never left without a companyId.
+      String? resolvedCompanyId = (companyId != null && companyId.trim().isNotEmpty)
           ? companyId.trim()
-          : _context.app.name;
+          : null;
+      if (resolvedCompanyId == null || resolvedCompanyId == '[DEFAULT]') {
+        final currentUser = _context.auth.currentUser;
+        if (currentUser != null) {
+          try {
+            final callerDoc = await _firestore
+                .collection('users')
+                .doc(currentUser.uid)
+                .get();
+            final callerCompanyId = callerDoc.data()?['companyId'] as String?;
+            if (callerCompanyId != null &&
+                callerCompanyId.isNotEmpty &&
+                callerCompanyId != '[DEFAULT]') {
+              resolvedCompanyId = callerCompanyId;
+            }
+          } catch (_) {}
+        }
+      }
+      resolvedCompanyId ??= _context.app.name;
 
       final existingManager = await _firestore
           .collection('managers')

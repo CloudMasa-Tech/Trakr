@@ -188,14 +188,14 @@ service cloud.firestore {
     // ── Role directory ─────────────────────────────────────────────────
     match /staff/{document=**} {
       allow read: if signedIn() || sameCompany();
-      allow create: if sameCompanyOnCreate();
-      allow update: if isCompanyAdmin() || (sameCompany() && unchangedPrivileges());
+      allow create: if isCompanyAdmin() || sameCompanyOnCreate() || hasAnyPermission(request.auth.uid, ['users.create', 'team.manage']);
+      allow update: if isCompanyAdmin() || (sameCompany() && unchangedPrivileges()) || hasAnyPermission(request.auth.uid, ['users.edit', 'team.manage']);
       allow delete: if isCompanyAdmin();
     }
     match /managers/{document=**} {
       allow read: if signedIn() || sameCompany();
-      allow create: if isCompanyAdmin() || sameCompanyOnCreate();
-      allow update: if isCompanyAdmin() || (sameCompany() && unchangedPrivileges());
+      allow create: if isCompanyAdmin() || sameCompanyOnCreate() || hasAnyPermission(request.auth.uid, ['users.create', 'team.manage']);
+      allow update: if isCompanyAdmin() || (sameCompany() && unchangedPrivileges()) || hasAnyPermission(request.auth.uid, ['users.edit', 'team.manage']);
       allow delete: if isCompanyAdmin();
     }
     match /admins/{document=**} {
@@ -218,9 +218,11 @@ service cloud.firestore {
       allow create: if request.auth.uid != null && (
           request.auth.uid == userId
           || isCompanyAdmin()
+          || hasAnyPermission(request.auth.uid, ['users.create', 'team.manage'])
       ) && (
           isCompanyAdmin()
           || isSeededBootstrapAdmin()
+          || hasAnyPermission(request.auth.uid, ['users.create', 'team.manage'])
           || noPrivilegeFields()
       ) && (
           !('role' in request.resource.data)
@@ -231,6 +233,7 @@ service cloud.firestore {
       allow update: if request.auth.uid != null && (
           request.auth.uid == userId
           || isCompanyAdmin()
+          || hasAnyPermission(request.auth.uid, ['users.edit', 'team.manage'])
       ) && (
           isCompanyAdmin()
           || unchangedPrivileges()
