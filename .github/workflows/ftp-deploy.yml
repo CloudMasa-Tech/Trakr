@@ -1,0 +1,59 @@
+
+name: Trakr Flutter Web FTP Deployment
+
+on:
+  push:
+    branches:
+      - master
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: trakr-production-deployment
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy Trakr
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter Version
+        run: flutter --version
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Build Flutter Web
+        run: flutter build web --release
+
+      - name: Verify Build Output
+        run: |
+          test -d build/web
+          test -f build/web/index.html
+          echo "Trakr Flutter Web build successful"
+
+      - name: Deploy to WebSpaceKit FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          protocol: ftps
+          port: 21
+          local-dir: build/web/
+          server-dir: /
+          dangerous-clean-slate: false
+          log-level: standard
