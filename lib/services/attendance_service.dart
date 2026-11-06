@@ -2322,6 +2322,27 @@ class AttendanceService {
   }
 
   // ─── Mark Attendance ──────────────────────────────────────────────────
+  /// Runs a post-commit side effect (audit log, alert, permission-record
+  /// update) so that it can never fail the attendance submission.
+  ///
+  /// By the time these run, the `attendance` document is ALREADY committed.
+  /// Letting an audit-log or alert write throw out of [markAttendance] made
+  /// the scanner report "attendance failed" for a check-in/check-out that is
+  /// sitting in Firestore — and the retry then hit `already-checked-in` /
+  /// "You have already checked out for today." The record is the source of
+  /// truth; these extras are best-effort.
+  Future<void> _runPostCommitSideEffect(
+    String label,
+    Future<void> Function() action,
+  ) async {
+    try {
+      await action();
+    } catch (e) {
+      debugPrint('markAttendance: post-commit side effect "$label" failed '
+          '(attendance record was still saved): $e');
+    }
+  }
+
   Future<AttendanceSubmissionResult> markAttendance({
     required String employeeId,
     required String employeeName,
@@ -2589,16 +2610,19 @@ class AttendanceService {
         );
       }
 
-      // Side-effects (fire-and-forget, outside transaction)
-      await _logService.logEvent(
-        staffId: canonicalEmployeeId,
-        staffName: canonicalEmployeeName,
-        eventType: AttendanceEventType.checkIn,
-        qrValidated: true,
-        geofenceValidated: !isWfh,
-        latitude: userLat,
-        longitude: userLng,
-      );
+      // Side-effects (best-effort, outside the transaction). The check-in is
+      // already committed above, so none of these may throw out of here.
+      await _runPostCommitSideEffect('check-in log', () async {
+        await _logService.logEvent(
+          staffId: canonicalEmployeeId,
+          staffName: canonicalEmployeeName,
+          eventType: AttendanceEventType.checkIn,
+          qrValidated: true,
+          geofenceValidated: !isWfh,
+          latitude: userLat,
+          longitude: userLng,
+        );
+      });
 
       unawaited(_sendAttendancePushNotification(
         employeeId: canonicalEmployeeId,
@@ -2922,37 +2946,43 @@ class AttendanceService {
     // ── TEMP_EXIT side-effects ───────────────────────────────────────────
     if (txResult.type == _TxAction.tempExit) {
       // Update permission request with exit time
-      if (txResult.permissionId != null) {
-        await _db
-            .collection('permission_requests')
-            .doc(txResult.permissionId)
-            .update({
-          'exitTime': Timestamp.fromDate(now),
-        });
-      }
+      await _runPostCommitSideEffect('temp-exit permission update', () async {
+        if (txResult.permissionId != null) {
+          await _db
+              .collection('permission_requests')
+              .doc(txResult.permissionId)
+              .update({
+            'exitTime': Timestamp.fromDate(now),
+          });
+        }
+      });
 
-      await _logService.logEvent(
-        staffId: canonicalEmployeeId,
-        staffName: canonicalEmployeeName,
-        eventType: AttendanceEventType.tempExit,
-        qrValidated: true,
-        geofenceValidated: !isWfh,
-        permissionId: txResult.permissionId,
-        latitude: userLat,
-        longitude: userLng,
-      );
+      await _runPostCommitSideEffect('temp-exit log', () async {
+        await _logService.logEvent(
+          staffId: canonicalEmployeeId,
+          staffName: canonicalEmployeeName,
+          eventType: AttendanceEventType.tempExit,
+          qrValidated: true,
+          geofenceValidated: !isWfh,
+          permissionId: txResult.permissionId,
+          latitude: userLat,
+          longitude: userLng,
+        );
+      });
 
-      await _createAttendanceAlert(
-        employeeId: canonicalEmployeeId,
-        employeeName: canonicalEmployeeName,
-        department: canonicalDepartment,
-        managerName: managerName,
-        status: 'temp-exit',
-        lateMinutes: 0,
-        policyAction: 'permission_temp_exit',
-        message:
-            '$canonicalEmployeeName has marked a temporary exit under an approved permission request. Expected return: ${_formatTime(txResult.permissionReturnTime)}.',
-      );
+      await _runPostCommitSideEffect('temp-exit alert', () async {
+        await _createAttendanceAlert(
+          employeeId: canonicalEmployeeId,
+          employeeName: canonicalEmployeeName,
+          department: canonicalDepartment,
+          managerName: managerName,
+          status: 'temp-exit',
+          lateMinutes: 0,
+          policyAction: 'permission_temp_exit',
+          message:
+              '$canonicalEmployeeName has marked a temporary exit under an approved permission request. Expected return: ${_formatTime(txResult.permissionReturnTime)}.',
+        );
+      });
 
       unawaited(_sendAttendancePushNotification(
         employeeId: canonicalEmployeeId,
@@ -2977,47 +3007,54 @@ class AttendanceService {
       final pendingStatus = txResult.pendingStatus ?? 'none';
       final pendingMinutes = txResult.pendingMinutes;
 
+      // The check-out is already committed; alerts/logs are best-effort.
       if (isEarlyCheckout) {
-        await _createAttendanceAlert(
-          employeeId: canonicalEmployeeId,
-          employeeName: canonicalEmployeeName,
-          department: canonicalDepartment,
-          managerName: managerName,
-          status: 'early-checkout',
-          lateMinutes: earlyCheckoutMinutes,
-          policyAction: 'early_checkout',
-          message:
-              '$canonicalEmployeeName checked out ${_formatDuration(Duration(minutes: earlyCheckoutMinutes))} before check-out start time (${timeConfig.checkOutStart}).',
-        );
+        await _runPostCommitSideEffect('early-checkout alert', () async {
+          await _createAttendanceAlert(
+            employeeId: canonicalEmployeeId,
+            employeeName: canonicalEmployeeName,
+            department: canonicalDepartment,
+            managerName: managerName,
+            status: 'early-checkout',
+            lateMinutes: earlyCheckoutMinutes,
+            policyAction: 'early_checkout',
+            message:
+                '$canonicalEmployeeName checked out ${_formatDuration(Duration(minutes: earlyCheckoutMinutes))} before check-out start time (${timeConfig.checkOutStart}).',
+          );
+        });
       }
 
       if (pendingStatus != 'none') {
-        await _createAttendanceAlert(
-          employeeId: canonicalEmployeeId,
-          employeeName: canonicalEmployeeName,
-          department: canonicalDepartment,
-          managerName: managerName,
-          status: 'pending-hours',
-          lateMinutes: lateMinutes,
-          policyAction: pendingStatus,
-          message:
-              '$canonicalEmployeeName has ${_formatDuration(Duration(minutes: pendingMinutes))} pending hours. '
-              '${_pendingAbsenceLabel(pendingMinutes)} marked from late check-in, early check-out, and permission hours.',
-        );
+        await _runPostCommitSideEffect('pending-hours alert', () async {
+          await _createAttendanceAlert(
+            employeeId: canonicalEmployeeId,
+            employeeName: canonicalEmployeeName,
+            department: canonicalDepartment,
+            managerName: managerName,
+            status: 'pending-hours',
+            lateMinutes: lateMinutes,
+            policyAction: pendingStatus,
+            message:
+                '$canonicalEmployeeName has ${_formatDuration(Duration(minutes: pendingMinutes))} pending hours. '
+                '${_pendingAbsenceLabel(pendingMinutes)} marked from late check-in, early check-out, and permission hours.',
+          );
+        });
       }
 
-      await _logService.logEvent(
-        staffId: canonicalEmployeeId,
-        staffName: canonicalEmployeeName,
-        eventType: AttendanceEventType.finalCheckout,
-        qrValidated: true,
-        geofenceValidated: !isWfh,
-        permissionMinutes: txResult.permissionPendingMinutes,
-        pendingMinutes: pendingMinutes,
-        pendingAbsenceStatus: pendingStatus,
-        latitude: userLat,
-        longitude: userLng,
-      );
+      await _runPostCommitSideEffect('check-out log', () async {
+        await _logService.logEvent(
+          staffId: canonicalEmployeeId,
+          staffName: canonicalEmployeeName,
+          eventType: AttendanceEventType.finalCheckout,
+          qrValidated: true,
+          geofenceValidated: !isWfh,
+          permissionMinutes: txResult.permissionPendingMinutes,
+          pendingMinutes: pendingMinutes,
+          pendingAbsenceStatus: pendingStatus,
+          latitude: userLat,
+          longitude: userLng,
+        );
+      });
 
       unawaited(_sendAttendancePushNotification(
         employeeId: canonicalEmployeeId,
@@ -3047,43 +3084,50 @@ class AttendanceService {
       final delayMinutes = txResult.delayMinutes;
 
       // Update the permission request
-      if (txResult.permissionId != null) {
-        await _db
-            .collection('permission_requests')
-            .doc(txResult.permissionId)
-            .update({
-          'actualReturnTime': Timestamp.fromDate(now),
-          'returnedToOffice': true,
-          'reEntryDelayMinutes': delayMinutes,
-        });
-      }
+      await _runPostCommitSideEffect('re-entry permission update', () async {
+        if (txResult.permissionId != null) {
+          await _db
+              .collection('permission_requests')
+              .doc(txResult.permissionId)
+              .update({
+            'actualReturnTime': Timestamp.fromDate(now),
+            'returnedToOffice': true,
+            'reEntryDelayMinutes': delayMinutes,
+          });
+        }
+      });
 
-      await _logService.logEvent(
-        staffId: canonicalEmployeeId,
-        staffName: canonicalEmployeeName,
-        eventType: AttendanceEventType.reEntry,
-        qrValidated: true,
-        geofenceValidated: !isWfh,
-        permissionMinutes: txResult.permissionPendingMinutes,
-        pendingMinutes: txResult.pendingMinutes,
-        pendingAbsenceStatus: txResult.pendingStatus ?? 'none',
-        latitude: userLat,
-        longitude: userLng,
-      );
+      await _runPostCommitSideEffect('re-entry log', () async {
+        await _logService.logEvent(
+          staffId: canonicalEmployeeId,
+          staffName: canonicalEmployeeName,
+          eventType: AttendanceEventType.reEntry,
+          qrValidated: true,
+          geofenceValidated: !isWfh,
+          permissionMinutes: txResult.permissionPendingMinutes,
+          pendingMinutes: txResult.pendingMinutes,
+          pendingAbsenceStatus: txResult.pendingStatus ?? 'none',
+          latitude: userLat,
+          longitude: userLng,
+        );
+      });
 
-      await _createAttendanceAlert(
-        employeeId: canonicalEmployeeId,
-        employeeName: canonicalEmployeeName,
-        department: canonicalDepartment,
-        managerName: managerName,
-        status: delayMinutes > 0 ? 're-entry-delay' : 're-entry',
-        lateMinutes: delayMinutes,
-        policyAction:
-            delayMinutes > 0 ? 'permission_reentry_late' : 'permission_reentry',
-        message: delayMinutes > 0
-            ? '$canonicalEmployeeName returned $delayMinutes minutes after the approved permission return time. Please review the permission record.'
-            : '$canonicalEmployeeName has re-entered within the approved permission time.',
-      );
+      await _runPostCommitSideEffect('re-entry alert', () async {
+        await _createAttendanceAlert(
+          employeeId: canonicalEmployeeId,
+          employeeName: canonicalEmployeeName,
+          department: canonicalDepartment,
+          managerName: managerName,
+          status: delayMinutes > 0 ? 're-entry-delay' : 're-entry',
+          lateMinutes: delayMinutes,
+          policyAction: delayMinutes > 0
+              ? 'permission_reentry_late'
+              : 'permission_reentry',
+          message: delayMinutes > 0
+              ? '$canonicalEmployeeName returned $delayMinutes minutes after the approved permission return time. Please review the permission record.'
+              : '$canonicalEmployeeName has re-entered within the approved permission time.',
+        );
+      });
 
       unawaited(_sendAttendancePushNotification(
         employeeId: canonicalEmployeeId,
@@ -3872,6 +3916,56 @@ class AttendanceService {
     _leaveCache.clear();
   }
 
+  /// Loads every approved leave request once and indexes it by employee, so a
+  /// records view can answer "was this person on leave that day?" locally.
+  ///
+  /// [isEmployeeOnApprovedLeave] issues two Firestore queries per (employee,
+  /// date) pair. Called from a table row builder that is itself inside a
+  /// non-lazy list, a month of thirty people meant ~1,800 queries fired on
+  /// first paint and again whenever the view rebuilt. This is two queries
+  /// total, and it carries the leave TYPE and reason, which the per-row
+  /// boolean could not — a manager needs to see "On Leave · Sick", not a row
+  /// of blanks.
+  Future<ApprovedLeaveIndex> loadApprovedLeaveIndex() async {
+    final byKey = <String, List<ApprovedLeaveSpan>>{};
+    try {
+      final snap = await _db
+          .collection('leave_requests')
+          .where('status', isEqualTo: 'approved')
+          .get();
+      for (final doc in snap.docs) {
+        final data = doc.data();
+        final startTs = data['startDate'];
+        final endTs = data['endDate'];
+        if (startTs is! Timestamp || endTs is! Timestamp) continue;
+        final start = startTs.toDate();
+        final end = endTs.toDate();
+        final rawType = (data['type']?.toString() ?? '').trim();
+        final span = ApprovedLeaveSpan(
+          start: DateTime(start.year, start.month, start.day),
+          end: DateTime(end.year, end.month, end.day),
+          type: rawType.isEmpty ? 'Leave' : rawType,
+          isHalfDay: rawType.toLowerCase().contains('half'),
+          isPaid: data['isPaid'] == true,
+          reason: (data['reason']?.toString() ?? '').trim(),
+        );
+        // Leave docs identify the person by `userId` and/or `employeeId`;
+        // index under both so either spelling resolves.
+        for (final raw in <dynamic>[data['userId'], data['employeeId']]) {
+          final key = raw?.toString().trim().toLowerCase() ?? '';
+          if (key.isEmpty) continue;
+          (byKey[key] ??= <ApprovedLeaveSpan>[]).add(span);
+        }
+      }
+    } catch (e) {
+      debugPrint('loadApprovedLeaveIndex failed: $e');
+      // An empty index degrades to "no leave known" rather than breaking the
+      // whole records view.
+      return const ApprovedLeaveIndex.empty();
+    }
+    return ApprovedLeaveIndex(byKey);
+  }
+
   Future<bool> isEmployeeOnApprovedLeave(String empId, DateTime date) async {
     if (empId.isEmpty) return false;
     final targetDate = DateTime(date.year, date.month, date.day);
@@ -4203,4 +4297,56 @@ class _MarkAttendanceTxResult {
         pendingStatus: pendingStatus,
         permissionPendingMinutes: permissionPendingMinutes,
       );
+}
+
+/// A single approved leave period.
+class ApprovedLeaveSpan {
+  final DateTime start;
+  final DateTime end;
+  final String type;
+  final bool isHalfDay;
+  final bool isPaid;
+  final String reason;
+
+  const ApprovedLeaveSpan({
+    required this.start,
+    required this.end,
+    required this.type,
+    required this.isHalfDay,
+    required this.isPaid,
+    required this.reason,
+  });
+
+  bool covers(DateTime day) => !day.isBefore(start) && !day.isAfter(end);
+}
+
+/// Approved leave for every employee, resolvable without a network round trip.
+/// Built by [AttendanceService.loadApprovedLeaveIndex].
+class ApprovedLeaveIndex {
+  final Map<String, List<ApprovedLeaveSpan>> _byKey;
+
+  const ApprovedLeaveIndex(this._byKey);
+
+  const ApprovedLeaveIndex.empty()
+      : _byKey = const <String, List<ApprovedLeaveSpan>>{};
+
+  bool get isEmpty => _byKey.isEmpty;
+
+  /// The leave covering [date] for [employeeId], or null. A full-day leave
+  /// wins over a half-day one when both somehow cover the same date, since
+  /// the full day is the more consequential of the two to show.
+  ApprovedLeaveSpan? lookup(String employeeId, DateTime date) {
+    final key = employeeId.trim().toLowerCase();
+    if (key.isEmpty) return null;
+    final spans = _byKey[key];
+    if (spans == null || spans.isEmpty) return null;
+    final day = DateTime(date.year, date.month, date.day);
+    ApprovedLeaveSpan? halfDay;
+    for (final span in spans) {
+      if (!span.covers(day)) continue;
+      if (!span.isHalfDay) return span;
+      halfDay ??= span;
+    }
+    return halfDay;
+  }
 }
