@@ -118,23 +118,47 @@ class TenantIdentityRepository {
       'https://us-central1-$masterProjectId'
       '.cloudfunctions.net/registerTenantMember',
     );
-    final response = await http
-        .post(
-          url,
-          headers: <String, String>{
-            'Content-Type': 'application/json',
-            'Authorization': 'Bearer $idToken',
-          },
-          body: jsonEncode(<String, dynamic>{
-            'data': <String, dynamic>{
-              'projectId': tenantProjectId,
-              'email': email.trim().toLowerCase(),
-              'role': role.name,
-              if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
+    http.Response response;
+    try {
+      response = await http
+          .post(
+            url,
+            headers: <String, String>{
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $idToken',
             },
-          }),
-        )
-        .timeout(const Duration(seconds: 60));
+            body: jsonEncode(<String, dynamic>{
+              'data': <String, dynamic>{
+                'projectId': tenantProjectId,
+                'email': email.trim().toLowerCase(),
+                'role': role.name,
+                if (name != null && name.trim().isNotEmpty) 'name': name.trim(),
+              },
+            }),
+          )
+          .timeout(const Duration(seconds: 60));
+    } on TimeoutException {
+      throw StateError(
+        'Could not reach the login-identity service at $url (timed out after '
+        '60s). The member was NOT onboarded. Check that the master project '
+        'Cloud Functions are deployed and reachable, then retry.',
+      );
+    } catch (e) {
+      // On Flutter Web a rejected CORS preflight surfaces as an opaque
+      // `ClientException: Failed to fetch` with no status code — the raw
+      // message gives the admin nothing to act on. Name the real cause: the
+      // browser could not complete the request to the master endpoint,
+      // usually because this origin is not in the function's CORS allow-list
+      // (functions/src/lib/httpAuth.ts `resolveCorsOrigin`) or the function
+      // build currently deployed predates that origin being added.
+      throw StateError(
+        'Could not reach the login-identity service at $url. The member was '
+        'NOT onboarded. On web this usually means the request origin is '
+        "rejected by the master Cloud Function's CORS allow-list, or the "
+        'function is not deployed. Redeploy the master functions '
+        '(cd functions && npm run deploy) and retry. Underlying error: $e',
+      );
+    }
 
     if (response.statusCode < 200 || response.statusCode >= 300) {
       throw StateError(

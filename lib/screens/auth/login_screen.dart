@@ -38,12 +38,7 @@ class _LoginScreenState extends State<LoginScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final auth = context.read<AuthSessionProvider>();
       if (auth.errorMessage != null) {
-        _showLoginMessageDialog(
-          title: 'Invalid Credentials',
-          message: auth.errorMessage!,
-          icon: Icons.error_outline_rounded,
-          iconColor: AppColors.dark.error,
-        );
+        _showLoginFailure(auth.errorMessage!);
       }
     });
   }
@@ -73,6 +68,10 @@ class _LoginScreenState extends State<LoginScreen> {
 
       if (!mounted) return;
 
+      // Tells the browser/password manager the sign-in succeeded so it can
+      // offer to save these credentials.
+      TextInput.finishAutofillContext();
+
       // Navigate directly to the workspace dashboard when we have the slug,
       // instead of relying on the router's redirect which may not fire if
       // the auth state hasn't fully propagated. This also avoids a full
@@ -90,13 +89,55 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       if (!mounted) return;
-      await _showLoginMessageDialog(
-        title: 'Invalid Credentials',
-        message: e.toString().replaceFirst('Exception: ', ''),
-        icon: Icons.error_outline_rounded,
-        iconColor: AppColors.dark.error,
-      );
+      await _showLoginFailure(e.toString().replaceFirst('Exception: ', ''));
     }
+  }
+
+  /// Picks a heading that matches the failure.
+  ///
+  /// Every sign-in failure used to be headed "Invalid Credentials", including
+  /// the ones that have nothing to do with credentials — a dropped
+  /// connection, a workspace still being provisioned, a rate-limit, a
+  /// disabled account. Telling someone their password is wrong when their
+  /// Wi-Fi dropped sends them off resetting a password that was fine.
+  ({String title, IconData icon}) _classifyLoginError(String message) {
+    final m = message.toLowerCase();
+    if (m.contains('network') ||
+        m.contains('connection') ||
+        m.contains('timed out') ||
+        m.contains('unavailable') ||
+        m.contains('unreachable')) {
+      return (title: 'Connection Problem', icon: Icons.wifi_off_rounded);
+    }
+    if (m.contains('being set up') ||
+        m.contains('not ready') ||
+        m.contains('try again shortly') ||
+        m.contains('few minutes')) {
+      return (title: 'Workspace Not Ready', icon: Icons.hourglass_top_rounded);
+    }
+    if (m.contains('suspended') || m.contains('disabled')) {
+      return (title: 'Account Unavailable', icon: Icons.block_rounded);
+    }
+    if (m.contains('too many')) {
+      return (title: 'Too Many Attempts', icon: Icons.timer_outlined);
+    }
+    if (m.contains('not enabled') ||
+        m.contains('not authorized') ||
+        m.contains('api key') ||
+        m.contains('internal error')) {
+      return (title: 'Sign-in Unavailable', icon: Icons.build_circle_outlined);
+    }
+    return (title: 'Invalid Credentials', icon: Icons.error_outline_rounded);
+  }
+
+  Future<void> _showLoginFailure(String message) {
+    final kind = _classifyLoginError(message);
+    return _showLoginMessageDialog(
+      title: kind.title,
+      message: message,
+      icon: kind.icon,
+      iconColor: AppColors.dark.error,
+    );
   }
 
   Future<void> _showLoginMessageDialog({
@@ -158,6 +199,10 @@ class _LoginScreenState extends State<LoginScreen> {
           },
           child: Form(
             key: _formKey,
+            // Lets the browser / password manager offer saved credentials and
+            // save new ones — on a daily-use web app this is the difference
+            // between typing an email every morning and one click.
+            child: AutofillGroup(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -165,6 +210,8 @@ class _LoginScreenState extends State<LoginScreen> {
                   label: 'Email',
                   child: TextFormField(
                     controller: _emailCtrl,
+                    autofocus: true,
+                    autofillHints: const [AutofillHints.username],
                     textInputAction: TextInputAction.next,
                     keyboardType: TextInputType.emailAddress,
                     style: const TextStyle(color: authNavy, fontSize: 14),
@@ -193,6 +240,7 @@ class _LoginScreenState extends State<LoginScreen> {
                     controller: _passwordCtrl,
                     focusNode: _passwordFocus,
                     obscureText: _obscurePassword,
+                    autofillHints: const [AutofillHints.password],
                     textInputAction: TextInputAction.done,
                     style: const TextStyle(color: authNavy, fontSize: 14),
                     decoration: authInputDecoration(
@@ -278,6 +326,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
               ],
+            ),
             ),
           ),
         ),

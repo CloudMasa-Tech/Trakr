@@ -123,6 +123,11 @@ class StaffService {
       return docRef.id;
     } on FirebaseAuthException catch (e) {
       throw Exception(_friendlyAuthMessage(e));
+    } on StateError catch (e) {
+      // Already a fully-formed, actionable message (e.g. the master
+      // login-identity endpoint being unreachable). Re-prefixing it with
+      // "Failed to add staff: Bad state: …" only buries the useful part.
+      throw Exception(e.message);
     } catch (e) {
       throw Exception('Failed to add staff: $e');
     }

@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:math';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
 
 import '../../models/staff.dart';
@@ -53,6 +55,60 @@ class OnboardUserDialog extends StatefulWidget {
 
 class _OnboardUserDialogState extends State<OnboardUserDialog> {
   final _formKey = GlobalKey<FormState>();
+  final _scrollCtrl = ScrollController();
+
+  /// Every validated field owns a key, declared here in the same order they
+  /// appear on screen. After a failed submit we walk this list to find the
+  /// first field that actually failed and scroll it into view — the dialog is
+  /// taller than the viewport, so without this the user is told "fix the
+  /// highlighted fields" while every highlight is off-screen.
+  final _roleKey = GlobalKey<FormFieldState<Object?>>();
+  final _nameKey = GlobalKey<FormFieldState<String>>();
+  final _emailKey = GlobalKey<FormFieldState<String>>();
+  final _phoneKey = GlobalKey<FormFieldState<String>>();
+  final _employeeIdKey = GlobalKey<FormFieldState<String>>();
+  final _designationKey = GlobalKey<FormFieldState<Object?>>();
+  final _managerKey = GlobalKey<FormFieldState<Object?>>();
+  final _maxStaffKey = GlobalKey<FormFieldState<String>>();
+  final _bloodGroupKey = GlobalKey<FormFieldState<Object?>>();
+  final _genderKey = GlobalKey<FormFieldState<Object?>>();
+  final _nationalityKey = GlobalKey<FormFieldState<Object?>>();
+  final _dobKey = GlobalKey<FormFieldState<String>>();
+  final _addressKey = GlobalKey<FormFieldState<String>>();
+  final _passwordKey = GlobalKey<FormFieldState<String>>();
+
+  List<GlobalKey<FormFieldState<dynamic>>> get _fieldsInOrder => [
+        _roleKey,
+        _nameKey,
+        _emailKey,
+        _phoneKey,
+        _employeeIdKey,
+        _designationKey,
+        _managerKey,
+        _maxStaffKey,
+        _bloodGroupKey,
+        _genderKey,
+        _nationalityKey,
+        _dobKey,
+        _addressKey,
+        _passwordKey,
+      ];
+
+  /// Submission failure shown as a persistent in-dialog banner. A SnackBar is
+  /// the wrong surface for this: it is clipped behind the dialog, auto-hides
+  /// after four seconds, and these messages (duplicate email, unreachable
+  /// identity service) are long and need to be read and acted on.
+  String? _submitError;
+
+  /// Server-detected clashes, rendered inline on the offending field so the
+  /// admin can see which value to change rather than reading it in a toast.
+  String? _emailConflict;
+  String? _employeeIdConflict;
+
+  /// Set once the user presses "Onboard user", so validation errors then
+  /// update live as fields are corrected instead of only on the next submit.
+  bool _submitAttempted = false;
+
   final _staffService = StaffService();
   final _managerAccountService = ManagerAccountService();
   final _accessControl = AccessControlService();
@@ -103,6 +159,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   static const _border = AppThemeColors.darkBorder;
   static const _label = AppThemeColors.darkText;
   static const _subtle = AppThemeColors.darkMuted;
+  static const _errorColor = Color(0xFFEF5350);
 
   @override
   void initState() {
@@ -110,11 +167,35 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     _selectedManagerName = widget.currentManagerName.trim().isEmpty
         ? null
         : widget.currentManagerName.trim();
+    // Keeps the avatar placeholder initial in step with the typed name.
+    _nameCtrl.addListener(_onNameChanged);
+    // A clash is about the value that was submitted; as soon as the admin
+    // edits that value the stale error must go.
+    _emailCtrl.addListener(() {
+      if (_emailConflict != null) setState(() => _emailConflict = null);
+    });
+    _employeeIdCtrl.addListener(() {
+      if (_employeeIdConflict != null) {
+        setState(() => _employeeIdConflict = null);
+      }
+    });
     _loadManagers();
   }
 
+  void _onNameChanged() {
+    final initial =
+        _nameCtrl.text.trim().isEmpty ? '' : _nameCtrl.text.trim()[0];
+    if (initial != _avatarInitial) {
+      setState(() => _avatarInitial = initial);
+    }
+  }
+
+  String _avatarInitial = '';
+
   @override
   void dispose() {
+    _nameCtrl.removeListener(_onNameChanged);
+    _scrollCtrl.dispose();
     _nameCtrl.dispose();
     _emailCtrl.dispose();
     _phoneCtrl.dispose();
@@ -257,66 +338,142 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     return NetworkImage(raw);
   }
 
+  /// Scrolls the first field that failed validation into view and focuses it.
+  /// Without this the dialog can report errors that are entirely off-screen.
+  void _scrollToFirstError() {
+    for (final key in _fieldsInOrder) {
+      final state = key.currentState;
+      if (state == null || !state.hasError) continue;
+      final ctx = key.currentContext;
+      if (ctx == null) continue;
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 280),
+        curve: Curves.easeOutCubic,
+        alignment: 0.1,
+      );
+      return;
+    }
+  }
+
+  /// Shows a submission failure in the in-dialog banner.
+  ///
+  /// [revealBanner] scrolls the banner into view. Pass `false` when the error
+  /// is also rendered inline on a specific field — there the field is the
+  /// more useful thing to scroll to, and two competing scroll animations
+  /// would fight each other.
+  void _setSubmitError(String message, {bool revealBanner = true}) {
+    if (!mounted) return;
+    setState(() {
+      _submitError = message;
+      _submitting = false;
+    });
+    if (!revealBanner) return;
+    // After the frame: inserting the banner changes the scroll extent.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollCtrl.hasClients) return;
+      _scrollCtrl.animateTo(
+        0,
+        duration: const Duration(milliseconds: 240),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
+
+  /// Looks for an email or employee-ID clash across BOTH directories before
+  /// anything is written.
+  ///
+  /// Previously a duplicate email only surfaced after Firebase Auth rejected
+  /// the account creation — by which point the master login-index entry had
+  /// already been written — and a duplicate employee ID was never checked at
+  /// all. That second one matters: attendance is keyed by
+  /// `attendance_<employeeId>_<date>`, so two people sharing an employee ID
+  /// overwrite each other's check-in.
+  Future<_FieldConflict?> _findConflict({
+    required String email,
+    required String employeeId,
+  }) async {
+    final db = FirebaseContextProvider.current.firestore;
+    for (final collection in const ['staff', 'managers']) {
+      final byEmail = await db
+          .collection(collection)
+          .where('email', isEqualTo: email)
+          .limit(1)
+          .get();
+      if (byEmail.docs.isNotEmpty) {
+        final who = (byEmail.docs.first.data()['name'] as String? ?? '').trim();
+        return _FieldConflict(
+          isEmail: true,
+          message: who.isEmpty
+              ? 'This email is already registered in the directory.'
+              : '$who already uses this email address.',
+        );
+      }
+      if (employeeId.isNotEmpty) {
+        final byId = await db
+            .collection(collection)
+            .where('employeeId', isEqualTo: employeeId)
+            .limit(1)
+            .get();
+        if (byId.docs.isNotEmpty) {
+          final who = (byId.docs.first.data()['name'] as String? ?? '').trim();
+          return _FieldConflict(
+            isEmail: false,
+            message: who.isEmpty
+                ? 'Employee ID "$employeeId" is already in use.'
+                : 'Employee ID "$employeeId" already belongs to $who.',
+          );
+        }
+      }
+    }
+    return null;
+  }
+
   Future<void> _submit() async {
     if (_submitting) return;
-    if (!_formKey.currentState!.validate()) return;
+
+    setState(() {
+      _submitAttempted = true;
+      _submitError = null;
+      _emailConflict = null;
+      _employeeIdConflict = null;
+    });
+
+    // ONE validation pass. Every field renders its own error inline, so the
+    // user sees everything that needs fixing at once. This replaces a chain
+    // of eleven sequential checks that each popped a single red SnackBar —
+    // fix one, submit, get the next — while the offending field itself was
+    // never highlighted and was often scrolled out of view.
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      setState(() => _submitError =
+          'Some required details are missing. The fields needing attention '
+          'are highlighted below.');
+      // After the frame: the banner has just been inserted above the form, so
+      // every field below it has moved.
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _scrollToFirstError());
+      return;
+    }
 
     final selectedRole = _selectedUserRole;
     if (selectedRole == null) {
-      _showError('Please select a role.');
+      _setSubmitError('Please select a role.');
       return;
     }
     // Domain-level guard: protected/system roles (Company Admin) can never be
     // assigned through onboarding, even if a crafted request bypasses the UI.
     if (selectedRole.isSystem ||
         selectedRole.id.trim().toLowerCase() == 'company_admin') {
-      _showError(
+      _setSubmitError(
           'The Company Admin role is system-protected and cannot be assigned '
           'during onboarding.');
       return;
     }
     if (_assignedRole == AppUserRole.manager && !_canAssignManager) {
-      _showError('Only admins can onboard a manager.');
+      _setSubmitError('Only admins can onboard a manager.');
       return;
     }
-    if (_assignedRole == AppUserRole.employee &&
-        (_selectedManagerName == null || _selectedManagerName!.isEmpty)) {
-      _showError('Please select a reporting manager.');
-      return;
-    }
-    if (_selectedDepartment == null) {
-      _showError('Please select a designation.');
-      return;
-    }
-    if (_isActive && _passwordCtrl.text.trim().isEmpty) {
-      _showError('Enter a password to create the login account.');
-      return;
-    }
-
-    // Demographic validators
-    if (_selectedBloodGroup == null) {
-      _showError('Please select a blood group.');
-      return;
-    }
-    if (_selectedGender == null) {
-      _showError('Please select a gender.');
-      return;
-    }
-    if (_selectedNationality == null || _selectedNationality!.trim().isEmpty) {
-      _showError('Nationality is required.');
-      return;
-    }
-    if (_dob == null && _dobCtrl.text.trim().isNotEmpty) {
-      _dob = _parseDOB(_dobCtrl.text.trim());
-    }
-    if (_dob == null) {
-      _showError('Please select or enter a valid date of birth.');
-      return;
-    }
-    if (_addressCtrl.text.trim().isEmpty) {
-      _showError('Address is required.');
-      return;
-    }
+    _dob ??= _parseDOB(_dobCtrl.text.trim());
 
     setState(() => _submitting = true);
     final email = _emailCtrl.text.trim().toLowerCase();
@@ -329,17 +486,29 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     String? emailError;
 
     try {
+      final conflict = await _findConflict(
+        email: email,
+        employeeId: _employeeIdCtrl.text.trim(),
+      );
+      if (conflict != null) {
+        if (!mounted) return;
+        setState(() {
+          if (conflict.isEmail) {
+            _emailConflict = conflict.message;
+          } else {
+            _employeeIdConflict = conflict.message;
+          }
+        });
+        _formKey.currentState?.validate();
+        _setSubmitError(conflict.message, revealBanner: false);
+        WidgetsBinding.instance
+            .addPostFrameCallback((_) => _scrollToFirstError());
+        return;
+      }
+
       final resolvedCompanyId = await _resolveCompanyId();
 
       if (_assignedRole == AppUserRole.employee) {
-        final emailTaken = await _staffService.isEmailAlreadyUsed(email);
-        if (emailTaken) {
-          _showError(
-              'A user with this email already exists as ${selectedRole.name}.');
-          setState(() => _submitting = false);
-          return;
-        }
-
         final staff = Staff(
           id: '',
           name: name,
@@ -370,15 +539,8 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
 
         await _staffService.addStaff(staff);
       } else {
-        final managers = FirebaseContextProvider.current.firestore.collection('managers');
-        final existing =
-            await managers.where('email', isEqualTo: email).limit(1).get();
-        if (existing.docs.isNotEmpty) {
-          _showError('A manager with this email already exists.');
-          setState(() => _submitting = false);
-          return;
-        }
-
+        final managers =
+            FirebaseContextProvider.current.firestore.collection('managers');
         if (_isActive) {
           await _managerAccountService.createManagerAccount(
             name: name,
@@ -484,23 +646,102 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
       }
 
       if (!mounted) return;
+      // Resolve the messenger BEFORE popping: afterwards this dialog's
+      // context is on its way out of the tree.
+      final messenger = ScaffoldMessenger.of(context);
       Navigator.of(context).pop(true);
-      ScaffoldMessenger.of(context).showSnackBar(
+
+      final credentialsUndelivered = _isActive && !emailSent;
+      messenger.showSnackBar(
         SnackBar(
           backgroundColor:
-              emailError == null ? Colors.green.shade600 : Colors.orange,
+              credentialsUndelivered ? Colors.orange.shade800 : Colors.green.shade600,
+          // A failed credential email needs to be read and acted on, so it
+          // stays up with an explicit dismiss instead of vanishing in four
+          // seconds like the success case.
+          duration: credentialsUndelivered
+              ? const Duration(seconds: 12)
+              : const Duration(seconds: 4),
+          action: credentialsUndelivered
+              ? SnackBarAction(
+                  label: 'Copy password',
+                  textColor: Colors.white,
+                  onPressed: () =>
+                      Clipboard.setData(ClipboardData(text: password)),
+                )
+              : null,
           content: Text(
             !_isActive
                 ? 'Onboarded $name as ${selectedRole.name}. Login access is disabled.'
                 : emailSent
-                    ? 'Created login for $email and sent the credentials by email.'
-                    : 'Created login for $email, but email was not sent. $emailError',
+                    ? '$name can now sign in as ${selectedRole.name} — credentials sent to $email.'
+                    : 'Account created for $email, but the credentials email '
+                        'failed to send. Share the password manually. '
+                        '($emailError)',
           ),
         ),
       );
     } catch (e) {
-      _showError(e.toString().replaceFirst('Exception: ', ''));
-      setState(() => _submitting = false);
+      // Persistent, in-dialog, and scrolled into view — these messages can be
+      // several lines long and tell the admin exactly what to do next.
+      _setSubmitError(e.toString().replaceFirst('Exception: ', ''));
+    }
+  }
+
+  /// True once the admin has entered anything worth losing. This form is
+  /// long (fourteen required inputs); closing it by accident used to discard
+  /// all of it silently.
+  bool get _isDirty =>
+      _nameCtrl.text.trim().isNotEmpty ||
+      _emailCtrl.text.trim().isNotEmpty ||
+      _phoneCtrl.text.trim().isNotEmpty ||
+      _employeeIdCtrl.text.trim().isNotEmpty ||
+      _passwordCtrl.text.trim().isNotEmpty ||
+      _addressCtrl.text.trim().isNotEmpty ||
+      _dobCtrl.text.trim().isNotEmpty ||
+      _photoUrl != null ||
+      _selectedDepartment != null ||
+      _selectedBloodGroup != null ||
+      _selectedGender != null ||
+      _selectedNationality != null;
+
+  Future<void> _handleClose() async {
+    if (_submitting) return;
+    if (!_isDirty) {
+      Navigator.of(context).pop();
+      return;
+    }
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppThemeColors.darkSurface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+        ),
+        title: const Text(
+          'Discard this draft?',
+          style: TextStyle(color: _label, fontWeight: FontWeight.w800),
+        ),
+        content: const Text(
+          'The details you have entered for this user will be lost.',
+          style: TextStyle(color: _subtle),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            style: TextButton.styleFrom(foregroundColor: _subtle),
+            child: const Text('Keep editing'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(backgroundColor: _errorColor),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    if (discard == true && mounted) {
+      Navigator.of(context).pop();
     }
   }
 
@@ -518,7 +759,15 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     final mediaWidth = MediaQuery.of(context).size.width;
     final dialogWidth = mediaWidth < 720 ? mediaWidth - 32 : 640.0;
 
-    return Dialog(
+    return PopScope(
+      // Esc and system-back are close affordances too — they must not bypass
+      // the discard confirmation or interrupt an in-flight submission.
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _handleClose();
+      },
+      child: Dialog(
       backgroundColor: AppThemeColors.darkSurface,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
       insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 24),
@@ -533,34 +782,54 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             _buildHeader(),
             Flexible(
               child: SingleChildScrollView(
+                controller: _scrollCtrl,
                 padding: const EdgeInsets.fromLTRB(24, 4, 24, 8),
                 child: Form(
                   key: _formKey,
+                  // Before the first submit the form stays quiet; afterwards
+                  // each field re-validates as it is corrected, so errors
+                  // clear the moment they are fixed instead of persisting
+                  // until the next submit.
+                  autovalidateMode: _submitAttempted
+                      ? AutovalidateMode.onUserInteraction
+                      : AutovalidateMode.disabled,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
+                      if (_submitError != null) ...[
+                        _buildErrorBanner(_submitError!),
+                        const SizedBox(height: 14),
+                      ],
                       _buildRoleChooser(),
                       const SizedBox(height: 14),
                       _buildPhotoPicker(),
                       const SizedBox(height: 14),
                       _twoCol(
                         _field(
+                          fieldKey: _nameKey,
                           controller: _nameCtrl,
                           label: 'Full name',
                           hint: 'Jane Doe',
                           required: true,
+                          autofocus: true,
                         ),
                         _field(
+                          fieldKey: _emailKey,
                           controller: _emailCtrl,
                           label: 'Email',
                           hint: 'jane@company.com',
                           required: true,
                           keyboardType: TextInputType.emailAddress,
+                          helperText: 'Used as the login ID.',
                           validator: (value) {
+                            // A clash found server-side is shown on the field
+                            // that owns it, not in a toast.
+                            if (_emailConflict != null) return _emailConflict;
                             final v = value?.trim() ?? '';
                             if (v.isEmpty) return 'Email is required';
-                            if (!v.contains('@') || !v.contains('.')) {
-                              return 'Enter a valid email';
+                            if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+                                .hasMatch(v)) {
+                              return 'Enter a valid email, e.g. jane@company.com';
                             }
                             return null;
                           },
@@ -570,10 +839,22 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                       _twoCol(
                         _buildPhoneField(),
                         _field(
+                          fieldKey: _employeeIdKey,
                           controller: _employeeIdCtrl,
                           label: 'Employee ID',
                           hint: 'EMP-1024',
                           required: true,
+                          helperText: 'Must be unique — attendance is keyed '
+                              'to this ID.',
+                          validator: (value) {
+                            if (_employeeIdConflict != null) {
+                              return _employeeIdConflict;
+                            }
+                            if ((value?.trim() ?? '').isEmpty) {
+                              return 'Employee ID is required';
+                            }
+                            return null;
+                          },
                         ),
                       ),
                       const SizedBox(height: 14),
@@ -588,11 +869,20 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                         _twoCol(
                           _buildJoinDate(),
                           _field(
+                            fieldKey: _maxStaffKey,
                             controller: _maxStaffCtrl,
                             label: 'Max Employees',
                             hint: '20',
                             required: true,
                             keyboardType: TextInputType.number,
+                            validator: (value) {
+                              final v = value?.trim() ?? '';
+                              if (v.isEmpty) return 'Max Employees is required';
+                              final n = int.tryParse(v);
+                              if (n == null) return 'Enter a whole number';
+                              if (n < 1) return 'Must be at least 1';
+                              return null;
+                            },
                           ),
                         )
                       else
@@ -609,6 +899,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                       ),
                       const SizedBox(height: 14),
                       _field(
+                        fieldKey: _addressKey,
                         controller: _addressCtrl,
                         label: 'Address',
                         hint: 'Enter home address detail',
@@ -629,6 +920,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             _buildActions(),
           ],
         ),
+      ),
       ),
     );
   }
@@ -671,7 +963,8 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
             ),
           ),
           IconButton(
-            onPressed: _submitting ? null : () => Navigator.of(context).pop(),
+            tooltip: 'Close',
+            onPressed: _submitting ? null : _handleClose,
             icon: const Icon(Icons.close_rounded, color: _subtle),
           ),
         ],
@@ -697,9 +990,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                 spacing: 8,
                 children: [
                   TextButton(
-                    onPressed: _submitting
-                        ? null
-                        : () => Navigator.of(context).pop(),
+                    onPressed: _submitting ? null : _handleClose,
                     style: TextButton.styleFrom(foregroundColor: _subtle),
                     child: const Text('Cancel'),
                   ),
@@ -736,46 +1027,24 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   }
 
   Widget _buildDepartmentDropdown() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _fieldLabel('Designation', required: true),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: AppThemeColors.darkCanvas,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _border),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              isExpanded: true,
-              dropdownColor: AppThemeColors.darkSurface,
-              value: _selectedDepartment,
-              hint: const Text(
-                'Select designation',
-                style: TextStyle(color: _subtle, fontSize: 13),
-              ),
-              icon:
-                  const Icon(Icons.keyboard_arrow_down_rounded, color: _subtle),
-              items: kAppDepartments
-                  .map((d) => DropdownMenuItem<String>(
-                        value: d,
-                        child: Text(
-                          d,
-                          style: const TextStyle(
-                              color: _label, fontWeight: FontWeight.w600),
-                        ),
-                      ))
-                  .toList(),
-              onChanged: _submitting
-                  ? null
-                  : (v) => setState(() => _selectedDepartment = v),
-            ),
-          ),
-        ),
-      ],
+    return _dropdownFormField(
+      fieldKey: _designationKey,
+      label: 'Designation',
+      hint: 'Select designation',
+      value: _selectedDepartment,
+      items: kAppDepartments
+          .map((d) => DropdownMenuItem<String>(
+                value: d,
+                child: Text(
+                  d,
+                  style: const TextStyle(
+                      color: _label, fontWeight: FontWeight.w600),
+                ),
+              ))
+          .toList(),
+      onChanged: (v) => setState(() => _selectedDepartment = v),
+      validate: () =>
+          _selectedDepartment == null ? 'Choose a designation' : null,
     );
   }
 
@@ -786,7 +1055,9 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
         _fieldLabel('Phone', required: true),
         const SizedBox(height: 6),
         TextFormField(
+          key: _phoneKey,
           controller: _phoneCtrl,
+          enabled: !_submitting,
           keyboardType: TextInputType.phone,
           style: const TextStyle(color: _label, fontSize: 14),
           decoration: _inputDecoration('Phone number').copyWith(
@@ -831,48 +1102,28 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   }
 
   Widget _buildNationalityDropdown() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _fieldLabel('Nationality', required: true),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: AppThemeColors.darkCanvas,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _border),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              isExpanded: true,
-              dropdownColor: AppThemeColors.darkSurface,
-              value: _selectedNationality,
-              hint: const Text(
-                'Select nationality',
-                style: TextStyle(color: _subtle, fontSize: 13),
-              ),
-              icon:
-                  const Icon(Icons.keyboard_arrow_down_rounded, color: _subtle),
-              items: kNationalityOptions
-                  .map((nationality) => DropdownMenuItem<String>(
-                        value: nationality,
-                        child: Text(
-                          nationality,
-                          style: const TextStyle(
-                            color: _label,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ))
-                  .toList(),
-              onChanged: _submitting
-                  ? null
-                  : (value) => setState(() => _selectedNationality = value),
-            ),
-          ),
-        ),
-      ],
+    return _dropdownFormField(
+      fieldKey: _nationalityKey,
+      label: 'Nationality',
+      hint: 'Select nationality',
+      value: _selectedNationality,
+      items: kNationalityOptions
+          .map((nationality) => DropdownMenuItem<String>(
+                value: nationality,
+                child: Text(
+                  nationality,
+                  style: const TextStyle(
+                    color: _label,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ))
+          .toList(),
+      onChanged: (v) => setState(() => _selectedNationality = v),
+      validate: () => (_selectedNationality == null ||
+              _selectedNationality!.trim().isEmpty)
+          ? 'Choose a nationality'
+          : null,
     );
   }
 
@@ -925,7 +1176,16 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                   : (roles.isNotEmpty ? roles.first : null);
         }
 
-        return Column(
+        return FormField<Object?>(
+          key: _roleKey,
+          validator: (_) {
+            if (_selectedUserRole == null) return 'Select a role to assign';
+            if (_assignedRole == AppUserRole.manager && !_canAssignManager) {
+              return 'Only admins can onboard a manager';
+            }
+            return null;
+          },
+          builder: (roleState) => Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _fieldLabel('Assign role', required: true),
@@ -983,12 +1243,27 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                                 roles.where((r) => r.id == id).firstOrNull;
                             if (match != null) {
                               setState(() => _selectedUserRole = match);
+                              roleState.didChange(id);
+                              _roleKey.currentState?.validate();
+                              // Switching between an employee and a
+                              // managerial role swaps which fields apply, so
+                              // drop stale errors from the hidden ones.
+                              _managerKey.currentState?.validate();
+                              _maxStaffKey.currentState?.validate();
                             }
                           },
                   ),
                 ),
               ),
-            if (_selectedUserRole?.isManagerial ?? false)
+            if (roleState.hasError)
+              Padding(
+                padding: const EdgeInsets.only(top: 6, left: 2),
+                child: Text(
+                  roleState.errorText!,
+                  style: const TextStyle(color: _errorColor, fontSize: 12),
+                ),
+              )
+            else if (_selectedUserRole?.isManagerial ?? false)
               Padding(
                 padding: const EdgeInsets.only(top: 6),
                 child: Text(
@@ -998,6 +1273,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
                 ),
               ),
           ],
+          ),
         );
       },
     );
@@ -1005,8 +1281,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
 
   Widget _buildPhotoPicker() {
     final image = _profileImageProvider();
-    final initial =
-        _nameCtrl.text.trim().isNotEmpty ? _nameCtrl.text.trim()[0] : 'U';
+    final initial = _avatarInitial.isNotEmpty ? _avatarInitial : 'U';
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -1143,10 +1418,14 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     required TextEditingController controller,
     required String label,
     required String hint,
+    GlobalKey<FormFieldState<String>>? fieldKey,
     bool required = false,
     TextInputType? keyboardType,
     bool obscureText = false,
     int? maxLines = 1,
+    bool autofocus = false,
+    TextInputAction textInputAction = TextInputAction.next,
+    String? helperText,
     String? Function(String?)? validator,
   }) {
     return Column(
@@ -1155,13 +1434,19 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
         _fieldLabel(label, required: required),
         const SizedBox(height: 6),
         TextFormField(
+          key: fieldKey,
           controller: controller,
           keyboardType: keyboardType,
           obscureText: obscureText,
           maxLines: maxLines,
+          autofocus: autofocus,
+          enabled: !_submitting,
+          // Lets the admin tab/Enter straight down the form instead of
+          // reaching for the mouse between every field.
+          textInputAction: maxLines == 1 ? textInputAction : null,
           style: const TextStyle(color: _label, fontSize: 14),
           cursorColor: _accent,
-          decoration: _inputDecoration(hint),
+          decoration: _inputDecoration(hint, helperText: helperText),
           validator: validator ??
               (value) {
                 if (!required) return null;
@@ -1212,103 +1497,108 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
   }
 
   Widget _buildManagerDropdown() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _fieldLabel('Reports to', required: true),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: AppThemeColors.darkCanvas,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _border),
-          ),
-          child: _loadingManagers
-              ? const SizedBox(
-                  height: 48,
-                  child: Row(
+    // While the list is still loading, or when the tenant genuinely has no
+    // eligible manager, the dropdown is swapped for an explanatory row — and
+    // the retry affordance means a transient load failure is recoverable
+    // without closing and losing the whole form.
+    Widget? replacement;
+    if (_loadingManagers) {
+      replacement = const SizedBox(
+        height: 48,
+        child: Row(
+          children: [
+            SizedBox(
+              width: 14,
+              height: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 10),
+            Text('Loading managers…', style: TextStyle(color: _subtle)),
+          ],
+        ),
+      );
+    } else if (_managerOptions.isEmpty) {
+      replacement = SizedBox(
+        height: 48,
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                _managerError ??
+                    'No eligible managers yet — mark a role as a reporting '
+                        'manager in Roles & Permissions.',
+                style: TextStyle(
+                  color: _managerError != null
+                      ? Colors.orangeAccent
+                      : _subtle,
+                  fontSize: 12,
+                ),
+              ),
+            ),
+            if (_managerError != null)
+              TextButton(
+                onPressed: _submitting
+                    ? null
+                    : () {
+                        setState(() => _loadingManagers = true);
+                        _loadManagers();
+                      },
+                style: TextButton.styleFrom(foregroundColor: _accent),
+                child: const Text('Retry'),
+              ),
+          ],
+        ),
+      );
+    }
+
+    return _dropdownFormField(
+      fieldKey: _managerKey,
+      label: 'Reports to',
+      hint: 'Select reporting manager',
+      value: _selectedManagerName,
+      itemHeight: 60,
+      replacement: replacement,
+      items: _managerOptions
+          .map((m) => DropdownMenuItem<String>(
+                value: m.name,
+                child: Text.rich(
+                  TextSpan(
                     children: [
-                      SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                      TextSpan(
+                        text: m.name,
+                        style: const TextStyle(
+                            color: _label, fontWeight: FontWeight.w600),
                       ),
-                      SizedBox(width: 10),
-                      Text('Loading managers…',
-                          style: TextStyle(color: _subtle)),
+                      if (m.roleName != null && m.roleName!.isNotEmpty)
+                        TextSpan(
+                          text: '   ${m.roleName}',
+                          style: const TextStyle(color: _subtle, fontSize: 12),
+                        ),
                     ],
                   ),
-                )
-              : _managerOptions.isEmpty
-                  ? SizedBox(
-                      height: 48,
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          _managerError ?? 'No eligible managers found',
-                          style: TextStyle(
-                            color: _managerError != null
-                                ? Colors.orangeAccent
-                                : _subtle,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ),
-                    )
-                  : DropdownButtonHideUnderline(
-                      child: DropdownButton<String>(
-                        isExpanded: true,
-                        isDense: true,
-                        dropdownColor: AppThemeColors.darkSurface,
-                        value: _selectedManagerName,
-                        hint: const Text('Select reporting manager',
-                            style: TextStyle(color: _subtle)),
-                        icon: const Icon(Icons.keyboard_arrow_down_rounded,
-                            color: _subtle),
-                        itemHeight: 60,
-                        items: _managerOptions
-                            .map((m) => DropdownMenuItem<String>(
-                                  value: m.name,
-                                  child: Text.rich(
-                                    TextSpan(
-                                      children: [
-                                        TextSpan(
-                                          text: m.name,
-                                          style: const TextStyle(
-                                              color: _label,
-                                              fontWeight: FontWeight.w600),
-                                        ),
-                                        if (m.roleName != null &&
-                                            m.roleName!.isNotEmpty)
-                                          TextSpan(
-                                            text: '   ${m.roleName}',
-                                            style: const TextStyle(
-                                                color: _subtle, fontSize: 12),
-                                          ),
-                                      ],
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ))
-                            .toList(),
-                        onChanged: _submitting
-                            ? null
-                            : (v) {
-                                final selected = _managerOptions.firstWhere(
-                                  (o) => o.name == v,
-                                  orElse: () => const _ManagerOption(name: ''),
-                                );
-                                setState(() {
-                                  _selectedManagerName = v;
-                                  _selectedManagerUserId = selected.userId;
-                                });
-                              },
-                      ),
-                    ),
-        ),
-      ],
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ))
+          .toList(),
+      onChanged: (v) {
+        final selected = _managerOptions.firstWhere(
+          (o) => o.name == v,
+          orElse: () => const _ManagerOption(name: ''),
+        );
+        setState(() {
+          _selectedManagerName = v;
+          _selectedManagerUserId = selected.userId;
+        });
+      },
+      validate: () {
+        if (_assignedRole != AppUserRole.employee) return null;
+        if (_loadingManagers) return 'Still loading managers — one moment.';
+        if (_selectedManagerName == null || _selectedManagerName!.isEmpty) {
+          return 'Choose who this person reports to';
+        }
+        return null;
+      },
     );
   }
 
@@ -1352,6 +1642,41 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     );
   }
 
+  Widget _buildErrorBanner(String message) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 6, 12),
+      decoration: BoxDecoration(
+        color: _errorColor.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _errorColor.withValues(alpha: 0.45)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.error_outline_rounded,
+              color: _errorColor, size: 18),
+          const SizedBox(width: 10),
+          Expanded(
+            child: SelectableText(
+              message,
+              style: const TextStyle(
+                color: _label,
+                fontSize: 12.5,
+                height: 1.45,
+              ),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Dismiss',
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.close_rounded, size: 16, color: _subtle),
+            onPressed: () => setState(() => _submitError = null),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildAccessNotice() {
     return Container(
       padding: const EdgeInsets.all(12),
@@ -1378,38 +1703,214 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     );
   }
 
+  /// Builds a readable but strong temporary password. Firebase rejects
+  /// anything under six characters, and the admin otherwise has to invent one
+  /// on the spot — which in practice means a weak, reused password.
+  String _generateTemporaryPassword() {
+    const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I/O — easy to misread
+    const lower = 'abcdefghijkmnopqrstuvwxyz'; // no l
+    const digits = '23456789'; // no 0/1
+    const symbols = '@#\$%&*';
+    final rng = Random.secure();
+    String pick(String pool) => pool[rng.nextInt(pool.length)];
+    final chars = <String>[
+      pick(upper),
+      pick(lower),
+      pick(digits),
+      pick(symbols),
+      for (var i = 0; i < 6; i++) pick('$upper$lower$digits'),
+    ]..shuffle(rng);
+    return chars.join();
+  }
+
+  Future<void> _generateAndFillPassword() async {
+    final generated = _generateTemporaryPassword();
+    setState(() {
+      _passwordCtrl.text = generated;
+      _obscurePassword = false;
+    });
+    _passwordKey.currentState?.validate();
+    await Clipboard.setData(ClipboardData(text: generated));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        backgroundColor: _accent,
+        content: Text('Temporary password generated and copied.'),
+        duration: Duration(seconds: 3),
+      ),
+    );
+  }
+
   Widget _buildPasswordField() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _fieldLabel('Login password', required: _isActive),
+        Row(
+          children: [
+            Expanded(child: _fieldLabel('Login password', required: _isActive)),
+            if (_isActive)
+              TextButton.icon(
+                onPressed: _submitting ? null : _generateAndFillPassword,
+                style: TextButton.styleFrom(
+                  foregroundColor: _accent,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  visualDensity: VisualDensity.compact,
+                ),
+                icon: const Icon(Icons.auto_awesome_rounded, size: 15),
+                label: const Text('Generate', style: TextStyle(fontSize: 12)),
+              ),
+          ],
+        ),
         const SizedBox(height: 6),
         TextFormField(
+          key: _passwordKey,
           controller: _passwordCtrl,
           obscureText: _obscurePassword,
+          enabled: !_submitting,
           style: const TextStyle(color: _label, fontSize: 14),
-          decoration: _inputDecoration('Temporary password').copyWith(
-            suffixIcon: IconButton(
-              icon: Icon(
-                _obscurePassword
-                    ? Icons.visibility_off_rounded
-                    : Icons.visibility_rounded,
-                color: _subtle,
-                size: 20,
-              ),
-              onPressed: () =>
-                  setState(() => _obscurePassword = !_obscurePassword),
+          decoration: _inputDecoration(
+            _isActive ? 'Temporary password' : 'Not needed — access is off',
+            helperText: _isActive
+                ? 'At least 6 characters. Shared with the user by email.'
+                : null,
+          ).copyWith(
+            suffixIcon: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (_passwordCtrl.text.trim().isNotEmpty)
+                  IconButton(
+                    tooltip: 'Copy password',
+                    icon: const Icon(Icons.copy_rounded,
+                        color: _subtle, size: 18),
+                    onPressed: () async {
+                      await Clipboard.setData(
+                          ClipboardData(text: _passwordCtrl.text));
+                      if (!mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Password copied.'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                  ),
+                IconButton(
+                  tooltip: _obscurePassword ? 'Show password' : 'Hide password',
+                  icon: Icon(
+                    _obscurePassword
+                        ? Icons.visibility_off_rounded
+                        : Icons.visibility_rounded,
+                    color: _subtle,
+                    size: 20,
+                  ),
+                  onPressed: () =>
+                      setState(() => _obscurePassword = !_obscurePassword),
+                ),
+              ],
             ),
           ),
+          onChanged: (_) => setState(() {}),
           validator: (value) {
             if (!_isActive) return null;
-            if (value == null || value.trim().isEmpty) {
-              return 'Login password is required';
+            final v = value?.trim() ?? '';
+            if (v.isEmpty) {
+              return 'A password is required to create the login account';
+            }
+            // Caught here rather than after the round trip: Firebase rejects
+            // short passwords only once the Auth call is already in flight,
+            // by which point the master login-index entry has been written.
+            if (v.length < 6) {
+              return 'Use at least 6 characters (Firebase minimum)';
             }
             return null;
           },
         ),
       ],
+    );
+  }
+
+  /// A dropdown that takes part in `Form.validate()`.
+  ///
+  /// The validator deliberately ignores the `FormField`'s own value and reads
+  /// the parent's state variable instead — the parent stays the single source
+  /// of truth (it is also reset from `_loadManagers`), so there is no second
+  /// copy of the value to drift out of sync.
+  Widget _dropdownFormField({
+    required GlobalKey<FormFieldState<Object?>> fieldKey,
+    required String label,
+    required String hint,
+    required String? value,
+    required List<DropdownMenuItem<String>> items,
+    required ValueChanged<String?> onChanged,
+    required String? Function() validate,
+    String? helperText,
+    double? itemHeight,
+    Widget? replacement,
+  }) {
+    return FormField<Object?>(
+      key: fieldKey,
+      validator: (_) => validate(),
+      builder: (state) {
+        final hasError = state.hasError;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _fieldLabel(label, required: true),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: AppThemeColors.darkCanvas,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: hasError ? _errorColor : _border,
+                  width: hasError ? 1.4 : 1,
+                ),
+              ),
+              child: replacement ??
+                  DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      isExpanded: true,
+                      dropdownColor: AppThemeColors.darkSurface,
+                      value: value,
+                      hint: Text(
+                        hint,
+                        style: const TextStyle(color: _subtle, fontSize: 13),
+                      ),
+                      icon: const Icon(Icons.keyboard_arrow_down_rounded,
+                          color: _subtle),
+                      itemHeight: itemHeight,
+                      items: items,
+                      onChanged: _submitting
+                          ? null
+                          : (v) {
+                              onChanged(v);
+                              // Clear the error the moment it is resolved.
+                              state.didChange(v);
+                              fieldKey.currentState?.validate();
+                            },
+                    ),
+                  ),
+            ),
+            if (hasError)
+              Padding(
+                padding: const EdgeInsets.only(top: 6, left: 2),
+                child: Text(
+                  state.errorText!,
+                  style: const TextStyle(color: _errorColor, fontSize: 12),
+                ),
+              )
+            else if (helperText != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 6, left: 2),
+                child: Text(
+                  helperText,
+                  style: const TextStyle(color: _subtle, fontSize: 11),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -1428,10 +1929,15 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
     );
   }
 
-  InputDecoration _inputDecoration(String hint) {
+  InputDecoration _inputDecoration(String hint, {String? helperText}) {
     return InputDecoration(
       hintText: hint,
       hintStyle: const TextStyle(color: _subtle, fontSize: 13),
+      helperText: helperText,
+      helperStyle: const TextStyle(color: _subtle, fontSize: 11),
+      helperMaxLines: 2,
+      errorStyle: const TextStyle(color: _errorColor, fontSize: 12),
+      errorMaxLines: 3,
       filled: true,
       fillColor: AppThemeColors.darkCanvas,
       isDense: true,
@@ -1444,98 +1950,65 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
         borderRadius: BorderRadius.circular(10),
         borderSide: const BorderSide(color: _border),
       ),
+      disabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: _border),
+      ),
       focusedBorder: OutlineInputBorder(
         borderRadius: BorderRadius.circular(10),
         borderSide: const BorderSide(color: _accent, width: 1.5),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: _errorColor, width: 1.4),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(10),
+        borderSide: const BorderSide(color: _errorColor, width: 1.6),
       ),
     );
   }
 
   Widget _buildBloodGroupDropdown() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _fieldLabel('Blood Group', required: true),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: AppThemeColors.darkCanvas,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _border),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              isExpanded: true,
-              dropdownColor: AppThemeColors.darkSurface,
-              value: _selectedBloodGroup,
-              hint: const Text(
-                'Select blood group',
-                style: TextStyle(color: _subtle, fontSize: 13),
-              ),
-              icon:
-                  const Icon(Icons.keyboard_arrow_down_rounded, color: _subtle),
-              items: const ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
-                  .map((bg) => DropdownMenuItem<String>(
-                        value: bg,
-                        child: Text(
-                          bg,
-                          style: const TextStyle(
-                              color: _label, fontWeight: FontWeight.w600),
-                        ),
-                      ))
-                  .toList(),
-              onChanged: _submitting
-                  ? null
-                  : (v) => setState(() => _selectedBloodGroup = v),
-            ),
-          ),
-        ),
-      ],
+    return _dropdownFormField(
+      fieldKey: _bloodGroupKey,
+      label: 'Blood Group',
+      hint: 'Select blood group',
+      value: _selectedBloodGroup,
+      items: const ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']
+          .map((bg) => DropdownMenuItem<String>(
+                value: bg,
+                child: Text(
+                  bg,
+                  style: const TextStyle(
+                      color: _label, fontWeight: FontWeight.w600),
+                ),
+              ))
+          .toList(),
+      onChanged: (v) => setState(() => _selectedBloodGroup = v),
+      validate: () =>
+          _selectedBloodGroup == null ? 'Choose a blood group' : null,
     );
   }
 
   Widget _buildGenderDropdown() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _fieldLabel('Gender', required: true),
-        const SizedBox(height: 6),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: AppThemeColors.darkCanvas,
-            borderRadius: BorderRadius.circular(10),
-            border: Border.all(color: _border),
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              isExpanded: true,
-              dropdownColor: AppThemeColors.darkSurface,
-              value: _selectedGender,
-              hint: const Text(
-                'Select gender',
-                style: TextStyle(color: _subtle, fontSize: 13),
-              ),
-              icon:
-                  const Icon(Icons.keyboard_arrow_down_rounded, color: _subtle),
-              items: const ['Male', 'Female', 'Other']
-                  .map((g) => DropdownMenuItem<String>(
-                        value: g,
-                        child: Text(
-                          g,
-                          style: const TextStyle(
-                              color: _label, fontWeight: FontWeight.w600),
-                        ),
-                      ))
-                  .toList(),
-              onChanged: _submitting
-                  ? null
-                  : (v) => setState(() => _selectedGender = v),
-            ),
-          ),
-        ),
-      ],
+    return _dropdownFormField(
+      fieldKey: _genderKey,
+      label: 'Gender',
+      hint: 'Select gender',
+      value: _selectedGender,
+      items: const ['Male', 'Female', 'Other']
+          .map((g) => DropdownMenuItem<String>(
+                value: g,
+                child: Text(
+                  g,
+                  style: const TextStyle(
+                      color: _label, fontWeight: FontWeight.w600),
+                ),
+              ))
+          .toList(),
+      onChanged: (v) => setState(() => _selectedGender = v),
+      validate: () => _selectedGender == null ? 'Choose a gender' : null,
     );
   }
 
@@ -1590,6 +2063,7 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
         _fieldLabel('Date of Birth', required: true),
         const SizedBox(height: 6),
         TextFormField(
+          key: _dobKey,
           controller: _dobCtrl,
           enabled: !_submitting,
           style: const TextStyle(color: _label, fontSize: 14),
@@ -1627,6 +2101,14 @@ class _OnboardUserDialogState extends State<OnboardUserDialog> {
       ],
     );
   }
+}
+
+/// A uniqueness clash found during the pre-flight check.
+class _FieldConflict {
+  final bool isEmail;
+  final String message;
+
+  const _FieldConflict({required this.isEmail, required this.message});
 }
 
 class _ManagerOption {
